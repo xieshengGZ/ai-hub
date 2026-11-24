@@ -598,6 +598,34 @@ def migrate_agent_skill_dirs():
     _AGENT_MIGRATED[0] = True
 
 
+_LAST_ADOPT = [0.0]
+
+
+def adopt_agents_skills():
+    """把 npx skills 之类工具装在 <cwd>/.agents/skills 下的技能收进共享库（复制，不动原目录）。"""
+    if time.time() - _LAST_ADOPT[0] < 60:
+        return
+    _LAST_ADOPT[0] = time.time()
+    with LOCK:
+        cwds = dict(WHERES)
+    for aid, cwd in cwds.items():
+        base = os.path.join(cwd or "", ".agents", "skills")
+        if not os.path.isdir(base):
+            continue
+        for d in os.listdir(base):
+            src = os.path.join(base, d)
+            if not os.path.isfile(os.path.join(src, "SKILL.md")):
+                continue
+            tgt = os.path.join(STORE, d)
+            if os.path.exists(tgt):
+                continue
+            try:
+                shutil.copytree(src, tgt)
+                sys.stderr.write("adopted .agents skill %s (from %s)\n" % (d, aid))
+            except OSError as e:
+                sys.stderr.write("adopt .agents %s failed: %r\n" % (d, e))
+
+
 def migrate_user_skills():
     """把 Kimi 用户级技能复制一份进共享库（不动原文件，个人 CLI 不受影响）。"""
     src = os.path.join(os.path.expanduser("~"), ".kimi-code", "skills")
@@ -688,6 +716,7 @@ def refresh_agents():
                         threading.Thread(target=PROCS[a["id"]].ensure, daemon=True).start()
                         sys.stderr.write("常驻实例拉起: %s\n" % a["id"])
             migrate_agent_skill_dirs()
+            adopt_agents_skills()
             for op in d.get("ops", []):
                 try:
                     a = PROCS.pop(op["agent"], None)
