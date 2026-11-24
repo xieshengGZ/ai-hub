@@ -1,0 +1,35 @@
+name: ci
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: python syntax
+        run: python -m py_compile hub/hub.py daemon/daemon.py
+
+      - name: js syntax
+        run: node --check hub/static/app.js
+
+      - name: hub smoke test
+        run: |
+          mkdir -p /tmp/aihub-ci/data
+          echo '{"password":"ci","data":"/tmp/aihub-ci/data","port":8899}' > hub/config.json
+          python3 hub/hub.py &
+          sleep 2
+          curl -fsS http://127.0.0.1:8899/api/health
+          curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8899/ | grep -qx 200
+          curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8899/app.js | grep -qx 200
+          kill %1
