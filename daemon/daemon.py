@@ -444,6 +444,10 @@ def _run_job(job, agent, files):
 
     sys.stderr.write("[job] spawn acp\n"); sys.stderr.flush()
     a = acp_for(agent)
+    try:
+        a.materialize_skills()   # 每轮都保证 AGENTS.md 与 aihub-send.sh 是最新的
+    except Exception as e:
+        sys.stderr.write("materialize failed: %r\n" % e)
     sys.stderr.write("[job] acp ready\n"); sys.stderr.flush()
     try:
         try:
