@@ -404,7 +404,21 @@ def _run_job(job, agent, files):
     a = acp_for(agent)
     sys.stderr.write("[job] acp ready\n"); sys.stderr.flush()
     try:
-        stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"])
+        try:
+            stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"])
+        except RuntimeError as e:
+            # CLI 侧会话被上一轮卡住（turn.agent_busy）：杀掉实例、丢掉旧 session，重开一次
+            if "agent_busy" in str(e) or "already in progress" in str(e):
+                sys.stderr.write("session busy, restarting instance for %s\n" % agent["id"])
+                a.kill()
+                a.sid = ""
+                try:
+                    os.remove(os.path.join(LOG_DIR, "sid-%s.txt" % agent["id"]))
+                except OSError:
+                    pass
+                stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"])
+            else:
+                raise
         push(force=True)
         if stop == "canceled" or state["cancel"]:
             http("/api/daemon/event", {"job": jid, "kind": "error", "error": "已中止"}, timeout=30)
