@@ -165,6 +165,7 @@ async function openAgent(id){
   show('s-chat');
   document.body.classList.remove('login-mode');
   try{ await pull(true); }catch(e){ $('chatSub').textContent = '加载失败：' + e.message; }
+  loadSkillCache();
   try{ history.pushState({chat: id}, '', '#' + id); }catch(e){}
 }
 
@@ -203,6 +204,7 @@ async function refreshChat(){
 
 function back(){
   clearTimers();
+  closeSlash();
   if(history.state && history.state.chat){
     try{ history.back(); return; }catch(e){}
   }
@@ -474,6 +476,7 @@ function inpText(){
 }
 function inpClear(){
   const el = $('inp');
+  closeSlash();
   el.textContent = '';
   el.style.height = '';
   el.classList.add('is-empty');
@@ -509,6 +512,50 @@ function paintMode(){
 }
 
 /* ---------- 附件 ---------- */
+/* ---------- 斜杠技能 ---------- */
+let SKILLS = [], SLASH = [], SLASH_IDX = 0, COMPOSING = false;
+async function loadSkillCache(){
+  if(!CUR){ SKILLS = []; return; }
+  try{
+    const d = await api('api/skills?agent=' + encodeURIComponent(CUR.id));
+    SKILLS = (d.skills || []).filter(s => s.enabled);
+  }catch(e){ SKILLS = []; }
+}
+function closeSlash(){ SLASH = []; SLASH_IDX = 0; const m = $('slashMenu'); if(m){ m.classList.remove('on'); m.innerHTML = ''; } }
+function slashPaint(){
+  const m = $('slashMenu');
+  if(!m || !SLASH.length){ closeSlash(); return; }
+  m.innerHTML = '<div class="hd">技能 · ↑↓ 选择，回车使用，Esc 取消</div>' +
+    SLASH.map((s, i) => `<div class="it${i === SLASH_IDX ? ' cur' : ''}" onclick="useSkill(${i})">` +
+      `<b>/${esc(s.id)}</b><span>${esc(s.summary || s.name || '')}</span></div>`).join('');
+  m.classList.add('on');
+}
+function slashCheck(){
+  const t = inpText();
+  const m = /^\/([a-zA-Z0-9_-]*)$/.exec(t);
+  if(!m || !SKILLS.length){ closeSlash(); return; }
+  const q = m[1].toLowerCase();
+  SLASH = SKILLS.filter(s => (s.id || '').toLowerCase().includes(q) ||
+                             (s.name || '').toLowerCase().includes(q)).slice(0, 8);
+  if(!SLASH.length){ closeSlash(); return; }
+  if(SLASH_IDX >= SLASH.length) SLASH_IDX = 0;
+  slashPaint();
+}
+function useSkill(i){
+  const s = SLASH[i || 0];
+  if(!s) return;
+  const el = $('inp');
+  el.textContent = '/' + s.id + ' ';
+  el.classList.remove('is-empty');
+  $('btnSend').disabled = false;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 110) + 'px';
+  closeSlash();
+  el.focus();
+  try{ const r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+       const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }catch(e){}
+}
+
 function pick(kind){
   const inp = $('fileInput');
   inp.disabled = false;
@@ -986,13 +1033,22 @@ function bindInput(){
     const t = inpText();
     ta.classList.toggle('is-empty', !t.trim());
     $('btnSend').disabled = !t.trim();
+    if(!COMPOSING) slashCheck();
   });
   ta.addEventListener('paste', (e) => {
     e.preventDefault();
     const t = ((e.clipboardData || window.clipboardData).getData('text/plain') || '');
     document.execCommand('insertText', false, t);
   });
+  ta.addEventListener('compositionstart', () => { COMPOSING = true; });
+  ta.addEventListener('compositionend', () => { COMPOSING = false; slashCheck(); });
   ta.addEventListener('keydown', (e) => {
+    if(SLASH.length){
+      if(e.key === 'ArrowDown'){ e.preventDefault(); SLASH_IDX = (SLASH_IDX + 1) % SLASH.length; slashPaint(); return; }
+      if(e.key === 'ArrowUp'){ e.preventDefault(); SLASH_IDX = (SLASH_IDX - 1 + SLASH.length) % SLASH.length; slashPaint(); return; }
+      if(e.key === 'Enter' || e.key === 'Tab'){ e.preventDefault(); useSkill(SLASH_IDX); return; }
+      if(e.key === 'Escape'){ e.preventDefault(); closeSlash(); return; }
+    }
     if(e.key === 'Enter' && !e.shiftKey && !e.isComposing){ e.preventDefault(); send(); }
   });
   $('btnLogin').onclick = login;

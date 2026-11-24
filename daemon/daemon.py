@@ -4,7 +4,7 @@
 向 Hub 长轮询领任务；为每个 agent 拉起一个 `kimi acp` 子进程；流式回传；本地记账；
 心跳；产出扫描与上传。不保存任何模型密钥。
 """
-import hashlib, json, mimetypes, os, queue, shutil, subprocess, sys, threading, time, urllib.request
+import hashlib, json, mimetypes, os, queue, re, shutil, subprocess, sys, threading, time, urllib.request
 
 CONF = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), encoding="utf-8"))
 HUB = CONF["hub"].rstrip("/")
@@ -351,6 +351,16 @@ def _run_job(job, agent, files):
     cwd = resolve_cwd(agent)
     os.makedirs(cwd, exist_ok=True)
     text = job["text"]
+    # 支持 "/技能id 任务描述" 的调用形式：翻译成明确的使用技能指令
+    m = re.match(r"^/([a-z0-9_-]+)(?:\s+([\s\S]*))?$", (text or "").strip())
+    if m:
+        sid, rest = m.group(1), (m.group(2) or "").strip()
+        sk = next((x for x in (agent.get("skills") or []) if x.get("id") == sid), None)
+        if sk:
+            text = ("请使用技能「%s」来完成下面的任务。适用场景：%s\n"
+                    "技能正文在 skills/%s/SKILL.md，需要时读它再动手。\n\n任务：%s"
+                    % (sk.get("name") or sid, (sk.get("when_to_use") or "")[:200], sid,
+                       rest or "（用户没有补充说明，按技能默认流程执行）"))
     refs = []
     pics = []
     for f in files or []:
@@ -522,6 +532,10 @@ def scan_local_skills():
     return list(out.values())
 
 
+# 进程启动时加载的这份代码的指纹：用来判断“磁盘上是新的、但跑的还是旧的”
+RUNNING_HASH = hashlib.sha256(open(os.path.abspath(__file__), "rb").read()).hexdigest()
+
+
 def self_update():
     """从 Hub 拉最新 daemon.py：校验、热替换、原地重启。有任务在跑就等下一轮。"""
     with LOCK:
@@ -530,7 +544,13 @@ def self_update():
     try:
         v = http("/api/daemon/version", timeout=15)
         cur = hashlib.sha256(open(os.path.abspath(__file__), "rb").read()).hexdigest()
+        if v.get("sha256") == cur and cur == RUNNING_HASH:
+            return
         if v.get("sha256") == cur:
+            # 文件已经是新的，但进程跑的还是旧的：直接重启
+            sys.stderr.write("self-update: reloading new code\n")
+            sys.stderr.flush()
+            os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
             return
         data = http("/api/daemon/source", raw=True, timeout=60)
         new = os.path.abspath(__file__) + ".new"
