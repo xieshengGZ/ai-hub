@@ -564,6 +564,40 @@ def delete_store_skill(sid):
     return "ok"
 
 
+_AGENT_MIGRATED = [False]
+
+
+def migrate_agent_skill_dirs():
+    """把历史上直接拷进 agent 目录的 skills/<id>/ 收编：拷贝进共享库，再换成链接。"""
+    if _AGENT_MIGRATED[0]:
+        return
+    with LOCK:
+        cwds = dict(WHERES)
+    if not cwds:
+        return
+    for aid, cwd in cwds.items():
+        base = os.path.join(cwd or "", "skills")
+        if not os.path.isdir(base):
+            continue
+        for d in os.listdir(base):
+            p = os.path.join(base, d)
+            if os.path.islink(p) or not os.path.isdir(p):
+                continue
+            if not os.path.isfile(os.path.join(p, "SKILL.md")):
+                continue
+            tgt = os.path.join(STORE, d)
+            try:
+                if not os.path.exists(tgt):
+                    shutil.move(p, tgt)
+                else:
+                    shutil.rmtree(p, ignore_errors=True)
+                link_skill(cwd, d)
+                sys.stderr.write("adopted skill %s -> %s\n" % (d, aid))
+            except OSError as e:
+                sys.stderr.write("adopt %s failed: %r\n" % (d, e))
+    _AGENT_MIGRATED[0] = True
+
+
 def migrate_user_skills():
     """把 Kimi 用户级技能复制一份进共享库（不动原文件，个人 CLI 不受影响）。"""
     src = os.path.join(os.path.expanduser("~"), ".kimi-code", "skills")
@@ -653,6 +687,7 @@ def refresh_agents():
                         acp_for(a2)
                         threading.Thread(target=PROCS[a["id"]].ensure, daemon=True).start()
                         sys.stderr.write("常驻实例拉起: %s\n" % a["id"])
+            migrate_agent_skill_dirs()
             for op in d.get("ops", []):
                 try:
                     a = PROCS.pop(op["agent"], None)
@@ -668,6 +703,7 @@ def refresh_agents():
                         else:
                             msg = delete_store_skill(sid)
                         sys.stderr.write("skill op %s %s/%s: %s\n" % (op["op"], aid, sid, msg))
+                        sys.stderr.flush()
                     if op["op"] == "purge_dir":
                         cwd = op.get("path") or WHERES.get(op["agent"])
                         if cwd and os.path.isdir(cwd) and cwd.startswith("/home/ubuntu/aihub/agents/"):
@@ -690,7 +726,7 @@ def refresh_agents():
                 PROCS[k].kill()
         except Exception as e:
             sys.stderr.write("refresh agents failed: %r\n" % e)
-        time.sleep(60)
+        time.sleep(10)
 
 
 def main():

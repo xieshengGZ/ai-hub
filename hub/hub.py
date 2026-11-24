@@ -151,6 +151,10 @@ def init():
                 c.execute("ALTER TABLE agents ADD COLUMN %s" % col)
             except Exception:
                 pass
+        try:
+            c.execute("ALTER TABLE daemon_ops ADD COLUMN host TEXT")
+        except Exception:
+            pass
         for col in ("source TEXT DEFAULT 'hub'", "origin_host TEXT"):
             try:
                 c.execute("ALTER TABLE skills ADD COLUMN %s" % col)
@@ -778,7 +782,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"host": mine, "agents": rows(
                     "SELECT id,name,cwd,prompt,model,always_on,managed_by FROM agents "
                     "WHERE deleted=0 AND host=? ORDER BY sort,id", (mine,)),
-                    "ops": rows("SELECT id,agent,op,path FROM daemon_ops WHERE done=0 ORDER BY id")})
+                    "ops": rows("SELECT id,agent,op,path FROM daemon_ops "
+                                "WHERE done=0 AND (host IS NULL OR host='' OR host=?) ORDER BY id",
+                                (mine,))})
             if p == "/api/daemon/version":
                 if not daemon_ok(self):
                     return self._json({"error": "forbidden"}, 403)
@@ -924,7 +930,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"host": mine, "agents": rows(
                     "SELECT id,name,cwd,prompt,model,always_on,managed_by FROM agents "
                     "WHERE deleted=0 AND host=? ORDER BY sort,id", (mine,)),
-                    "ops": rows("SELECT id,agent,op,path FROM daemon_ops WHERE done=0 ORDER BY id")})
+                    "ops": rows("SELECT id,agent,op,path FROM daemon_ops "
+                                "WHERE done=0 AND (host IS NULL OR host='' OR host=?) ORDER BY id",
+                                (mine,))})
             if p == "/api/daemon/recover":
                 # 守护进程重启后，把上次遗留的 running 任务放回队列
                 with DB_LOCK, db() as c:
@@ -1139,8 +1147,8 @@ class Handler(BaseHTTPRequestHandler):
                     n = one("SELECT COUNT(*) n FROM agent_skills WHERE skill=? AND enabled=1", (sid,))["n"]
                     if n:
                         raise Api(400, "还有 %d 个 agent 装着它，先卸载完再删" % n)
-                    run("INSERT INTO daemon_ops(agent, op, path, ts) VALUES(?,?,?,?)",
-                        ("", "skill_delete", sid, now()))
+                    run("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
+                        ("", "skill_delete", sid, now(), sk.get("origin_host") or ""))
                     bump()
                     return self._json({"ok": True})
                 if op not in ("install", "uninstall"):
@@ -1150,8 +1158,8 @@ class Handler(BaseHTTPRequestHandler):
                     raise Api(404, "没有这个 agent")
                 if (ag.get("host") or "") != (sk.get("origin_host") or ""):
                     raise Api(400, "这个技能不在该 agent 所在机器的库里")
-                run("INSERT INTO daemon_ops(agent, op, path, ts) VALUES(?,?,?,?)",
-                    (agent_, "skill_" + op, sid, now()))
+                run("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
+                    (agent_, "skill_" + op, sid, now(), ag.get("host") or ""))
                 bump()
                 return self._json({"ok": True})
             if p == "/api/skill/bind":
