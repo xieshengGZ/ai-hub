@@ -266,15 +266,18 @@ window.addEventListener('popstate', () => {
   }
 });
 
-/* 左边缘右滑返回（跟手阈值：水平位移 > 72px 且明显大于竖向） */
+/* 手势返回：聊天页从左边缘右滑；图片灯箱 / 文件预览打开时，任意位置左右滑都能退出 */
 (function(){
-  let sx = 0, sy = 0, tracking = false, decided = false;
+  let sx = 0, sy = 0, tracking = false, decided = false, overlay = false;
   const EDGE = 46;
+  const overlayOpen = () => !!(document.getElementById('pv') || document.getElementById('lb'));
   document.addEventListener('touchstart', (e) => {
-    if(SCREEN !== 's-chat' || !e.touches || e.touches.length !== 1) return;
+    if(!e.touches || e.touches.length !== 1) return;
+    overlay = overlayOpen();
+    if(!overlay && SCREEN !== 's-chat') return;
     const t = e.touches[0];
     sx = t.clientX; sy = t.clientY;
-    tracking = sx <= EDGE;
+    tracking = overlay ? true : (sx <= EDGE);
     decided = false;
   }, {passive:true});
   document.addEventListener('touchmove', (e) => {
@@ -283,7 +286,7 @@ window.addEventListener('popstate', () => {
     const dx = t.clientX - sx, dy = t.clientY - sy;
     if(!decided && (Math.abs(dx) > 10 || Math.abs(dy) > 10)){
       decided = true;
-      if(dy > Math.abs(dx)) tracking = false;
+      if(!overlay && dy > Math.abs(dx)) tracking = false;
     }
   }, {passive:true});
   document.addEventListener('touchend', (e) => {
@@ -292,12 +295,17 @@ window.addEventListener('popstate', () => {
     const t = (e.changedTouches && e.changedTouches[0]) || null;
     if(!t) return;
     const dx = t.clientX - sx, dy = t.clientY - sy;
-    if(dx > 72 && Math.abs(dx) > Math.abs(dy) * 1.6){
-      if(document.getElementById('pv')) return closePreview();
-      const lb = document.getElementById('lb');
-      if(lb) return lb.remove();
-      back();
+    if(overlay){
+      // 灯箱/预览：左右任一方向、水平位移超过 60px 就退出，竖向优先当作滚动
+      if(Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy) * 1.2){
+        const pv = document.getElementById('pv');
+        if(pv){ closePreview(); return; }
+        const lb = document.getElementById('lb');
+        if(lb) lb.remove();
+      }
+      return;
     }
+    if(dx > 72 && Math.abs(dx) > Math.abs(dy) * 1.6) back();
   }, {passive:true});
 })();
 
