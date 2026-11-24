@@ -331,6 +331,7 @@ let PV_CLOSING = false;
 function closePreview(fromHistory){
   const o = document.getElementById('pv');
   if(o) o.remove();
+  document.body.classList.remove('pv-open');
   if(!fromHistory && history.state && history.state.pv){
     PV_CLOSING = true;
     try{ history.back(); }catch(e){ PV_CLOSING = false; }
@@ -341,9 +342,12 @@ async function openPreview(id, name, mime){
   const url = 'api/file?id=' + encodeURIComponent(id);
   const o = document.createElement('div');
   o.id = 'pv'; o.className = 'pv';
+  document.body.classList.add('pv-open');
   try{ history.pushState({pv: id}, '', location.pathname + location.hash); }catch(e){}
+  window.PV_TEXT = '';
   o.innerHTML = `<div class="pvhd"><b>${esc(name)}</b>` +
-    `<span class="pvact"><a href="${url}&dl=1" download="${escAttr(name)}">下载</a>` +
+    `<span class="pvact"><span id="pvCopy" class="pvcopy" onclick="pvCopyText()" style="display:none">复制全文</span>` +
+    `<a href="${url}&dl=1" download="${escAttr(name)}">下载</a>` +
     `<span class="pvx" onclick="closePreview()">关闭</span></span></div>` +
     `<div class="pvbody"><div class="hint">加载中…</div></div>`;
   document.body.appendChild(o);
@@ -361,6 +365,9 @@ async function openPreview(id, name, mime){
     }else if(m.startsWith('text/') || m === 'application/json' || TEXT_EXT.test(n)){
       const {txt, truncated} = await readText(url, 1024 * 1024);
       const isMd = /\.(md|markdown)$/i.test(n);
+      const cb = document.getElementById('pvCopy'); if(cb) cb.style.display = '';
+      window.PV_TEXT = txt;
+      const copyBtn = document.getElementById('pvCopy');
       body.innerHTML = `<div class="pvtxt${isMd ? ' md' : ''}">${isMd ? md(txt) : '<pre>' + esc(txt) + '</pre>'}` +
         (truncated ? '<div class="hint">文件较大，只显示前 1 MB，完整内容请下载。</div>' : '') + '</div>';
     }else{
@@ -371,6 +378,11 @@ async function openPreview(id, name, mime){
   }
 }
 
+function pvCopyText(){
+  const t = window.PV_TEXT || '';
+  if(!t) return;
+  navigator.clipboard.writeText(t).then(() => toast('已复制全文'), () => toast('复制失败'));
+}
 function viewImg(u){
   let o = document.getElementById('lb');
   if(!o){

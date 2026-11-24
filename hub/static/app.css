@@ -310,3 +310,9 @@ body.login-mode{background:#04070a}
 }
 .nx-title{animation:nxflick 1.4s steps(1) 1}
 @keyframes nxflick{0%,12%,14%,18%{opacity:.35;text-shadow:1px 0 #ff3d6e,-1px 0 #3fffcb}16%,100%{opacity:1}}
+
+/* 预览层打开时，后面的页面不可选中（否则 全选 会把整个会话一起复制） */
+body.pv-open > :not(#pv){user-select:none!important;-webkit-user-select:none!important}
+body.pv-open > .phone{visibility:hidden}   /* 预览盖住时后面整页不可见也不可选中，滚动位置保留 */
+.pvhd{user-select:none;-webkit-user-select:none}
+.pvcopy{cursor:pointer;color:var(--teal)}
