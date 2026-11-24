@@ -1,5 +1,7 @@
 # 企业 AI 中枢 · AI Hub
 
+[![ci](https://github.com/xieshengGZ/ai-hub/actions/workflows/ci.yml/badge.svg)](https://github.com/xieshengGZ/ai-hub/actions/workflows/ci.yml)
+
 把散落在多台机器上的 AI agent（默认基于 Kimi CLI 的 ACP 协议）收拢成一个 Web 工作台：
 在手机或浏览器里给每台机器派活、看流式输出、收产出文件、传附件。
 
