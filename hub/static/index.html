@@ -190,7 +190,10 @@
       <input id="skName" placeholder="新技能名，例如 部署检查"
         style="flex:1;padding:10px 12px;border:1px solid #D8DED6;border-radius:10px;font:inherit;font-size:14.5px;outline:0">
       <button class="pick" style="flex:none;padding:10px 14px" onclick="newSkill()">新建</button>
+      <button class="pick" style="flex:none;padding:10px 14px" onclick="importSkillPick()">导入 SKILL.md</button>
     </div>
+    <div class="hint" style="padding:0 16px 8px">「本机同步」的技能以那台机器的磁盘为准：停用只影响当前 agent，彻底删除要去机器上删目录。</div>
+    <input id="skFile" type="file" accept=".md,.markdown,text/markdown" class="vhide" onchange="importSkill(this)">
   </div>
 
   <!-- 团队 -->
@@ -217,6 +220,6 @@
     <div id="artList"></div>
   </div>
 </div>
-<script src="app.js?v=55"></script>
+<script src="app.js?v=56"></script>
 </body>
 </html>

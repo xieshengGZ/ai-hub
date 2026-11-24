@@ -710,12 +710,18 @@ async function loadSkills(){
   const d = await api('api/skills?agent=' + encodeURIComponent(CUR.id));
   const ss = d.skills || [];
   $('skillCount').textContent = ss.filter(s => s.enabled).length + '/' + ss.length;
-  $('skillList').innerHTML = ss.length ? ss.map(s =>
-    `<div class="item"><span class="nm">${esc(s.name)}<br><span style="font-size:12px;color:#8B949A">${esc(s.summary || '')}</span></span>
-      <span class="r" style="color:${s.enabled ? '#0F5B63' : '#9AA39D'}" onclick="toggleSkill('${s.id}', ${s.enabled ? 0 : 1})">${s.enabled ? '已启用' : '未启用'}</span>
-      <span class="r" style="color:#A33A2B;margin-left:10px" onclick="deleteSkill('${s.id}')">删除</span>
-    </div>`).join('')
-    : '<div class="hint">还没有技能。名字下面填内容后点「新建」。</div>';
+  $('skillList').innerHTML = ss.length ? ss.map(s => {
+    const local = (s.source || 'hub') === 'local';
+    const tag = local ? '<span class="tag" title="来自本机磁盘">本机同步</span>' : '<span class="tag" title="在中枢创建">中枢</span>';
+    const right = local
+      ? `<span class="r" style="color:#B07C33;margin-left:10px" onclick="toast('这是从「${escAttr(s.origin_host || '本机')}」的 ~/.kimi-code/skills/ 同步来的；要彻底删除请到那台机器上删目录')">本机管理</span>`
+      : `<span class="r" style="color:#A33A2B;margin-left:10px" onclick="deleteSkill('${s.id}')">全局删除</span>`;
+    return `<div class="item"><span class="nm">/${esc(s.id)} · ${esc(s.name)} ${tag}<br>` +
+      `<span style="font-size:12px;color:#8B949A">${esc(s.summary || '')}</span></span>` +
+      `<span class="r" style="color:${s.enabled ? '#0F5B63' : '#9AA39D'}" onclick="toggleSkill('${s.id}', ${s.enabled ? 0 : 1})">${s.enabled ? '已启用' : '未启用'}</span>` +
+      right + `</div>`;
+  }).join('')
+    : '<div class="hint">还没有技能。可以「新建」，也可以「导入 SKILL.md」，或者让 agent 装到 ~/.kimi-code/skills 后自动同步过来。</div>';
 }
 
 async function toggleSkill(id, on){
@@ -726,10 +732,34 @@ async function toggleSkill(id, on){
 }
 
 async function deleteSkill(id){
-  if(!confirm('删除这个技能？所有 agent 上的绑定也会一起删。')) return;
+  if(!confirm('全局删除这个技能？所有 agent 上的绑定也会一起删。\n（如果只想让当前 agent 不用它，请点「已启用」改成停用）')) return;
   await api('api/skill/delete', {method:'POST', headers:{'Content-Type':'application/json'},
     body: JSON.stringify({skill: id})});
   toast('已删除'); loadSkills();
+}
+
+function importSkillPick(){ const el = $('skFile'); if(el) el.click(); }
+async function importSkill(inp){
+  const f = (inp.files || [])[0]; if(!f) return;
+  inp.value = '';
+  const txt = await f.text();
+  let id = (f.name || 'skill').replace(/\.(md|markdown)$/i, '').toLowerCase().replace(/[^a-z0-9_-]/g, '-');
+  let name = id, summary = '', when = '';
+  for(const line of txt.split('\n').slice(0, 30)){
+    const t = line.trim();
+    if(t.startsWith('name:') && t.length > 5) name = t.slice(5).trim();
+    if(t.startsWith('description:') && t.length > 12) summary = t.slice(12).trim();
+    if(t.startsWith('whenToUse:') && t.length > 10) when = t.slice(10).trim();
+  }
+  if(!id){ toast('文件名不能当技能 id，请改成英文名'); return; }
+  try{
+    await api('api/skill/create', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id, name, summary, when, body: txt})});
+    await api('api/skill/bind', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({agent: CUR.id, skill: id, on: true})});
+    toast('已导入并启用：' + id);
+    loadSkills(); loadSkillCache();
+  }catch(e){ alert('导入失败：' + e.message); }
 }
 
 async function newSkill(){

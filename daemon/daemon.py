@@ -484,14 +484,12 @@ def post_usage():
             sys.stderr.write("usage post failed: %r\n" % e)
 
 
-_LAST_SKILL_SCAN = [0.0]
+_SKILL_SIG = ["-"]
 
 
 def scan_local_skills():
-    """把本机 ~/.kimi-code/skills 和各 agent 工作目录 skills/ 下的技能报给中枢。5 分钟一次。"""
-    if time.time() - _LAST_SKILL_SCAN[0] < 300:
-        return None
-    _LAST_SKILL_SCAN[0] = time.time()
+    """把本机 ~/.kimi-code/skills 和各 agent 工作目录 skills/ 下的技能报给中枢。
+    每 20 秒随心跳看一眼，只有文件集合/时间戳变了才上报。"""
 
     def parse(path):
         try:
@@ -517,18 +515,27 @@ def scan_local_skills():
     for aid, cwd in cwds.items():
         if cwd:
             roots.append((os.path.join(cwd, "skills"), aid))
-    out = {}
+    out, sig_parts = {}, []
     for root, scope in roots:
         if not os.path.isdir(root):
             continue
-        for d in os.listdir(root):
+        for d in sorted(os.listdir(root)):
             p = os.path.join(root, d, "SKILL.md")
             if not os.path.isfile(p):
+                continue
+            try:
+                st = os.stat(p)
+                sig_parts.append("%s|%d|%d" % (p, int(st.st_mtime), st.st_size))
+            except OSError:
                 continue
             sk = parse(p)
             if sk:
                 sk["scope"] = scope
                 out[sk["id"]] = sk
+    sig = hashlib.sha256("\n".join(sig_parts).encode()).hexdigest()
+    if sig == _SKILL_SIG[0]:
+        return None
+    _SKILL_SIG[0] = sig
     return list(out.values())
 
 

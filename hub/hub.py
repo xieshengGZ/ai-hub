@@ -151,6 +151,11 @@ def init():
                 c.execute("ALTER TABLE agents ADD COLUMN %s" % col)
             except Exception:
                 pass
+        for col in ("source TEXT DEFAULT 'hub'", "origin_host TEXT"):
+            try:
+                c.execute("ALTER TABLE skills ADD COLUMN %s" % col)
+            except Exception:
+                pass
         for col in ("token TEXT", "created REAL DEFAULT 0"):
             try:
                 c.execute("ALTER TABLE hosts ADD COLUMN %s" % col)
@@ -430,12 +435,14 @@ def daemon_hb(d):
         sid = re.sub(r"[^a-z0-9_-]", "-", (sk.get("id") or "").lower()).strip("-")[:48]
         if not sid:
             continue
-        run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created)
-               VALUES(?,?,?,?,?,'1',?)
+        run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created,source,origin_host)
+               VALUES(?,?,?,?,?,'1',?,'local',?)
                ON CONFLICT(id) DO UPDATE SET name=excluded.name, summary=excluded.summary,
-                                             when_to_use=excluded.when_to_use, body=excluded.body""",
+                                             when_to_use=excluded.when_to_use, body=excluded.body,
+                                             source='local', origin_host=excluded.origin_host""",
             (sid, (sk.get("name") or sid)[:80], (sk.get("summary") or "")[:300],
-             (sk.get("when_to_use") or "")[:300], sk.get("body") or "", now()))
+             (sk.get("when_to_use") or "")[:300], sk.get("body") or "", now(),
+             d.get("host") or ""))
         scope = sk.get("scope") or ""
         if scope == "user":
             targets = [r["id"] for r in rows(
@@ -727,7 +734,8 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed():
                     return
                 ag = q.get("agent", [""])[0]
-                allsk = rows("SELECT id,name,summary,when_to_use,version FROM skills ORDER BY created DESC")
+                allsk = rows("SELECT id,name,summary,when_to_use,version,source,origin_host "
+                             "FROM skills ORDER BY created DESC")
                 bound = {r["skill"]: r["enabled"] for r in rows(
                     "SELECT skill, enabled FROM agent_skills WHERE agent=?", (ag,))} if ag else {}
                 for k in allsk:
@@ -1099,8 +1107,8 @@ class Handler(BaseHTTPRequestHandler):
                 sid = (d.get("id") or "").strip() or ("s%d" % int(now()))
                 if one("SELECT id FROM skills WHERE id=?", (sid,)):
                     raise Api(409, "技能 id 已存在")
-                run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created)
-                       VALUES(?,?,?,?,?,?,?)""",
+                run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created,source,origin_host)
+                       VALUES(?,?,?,?,?,?,?,'hub','')""",
                     (sid, name, d.get("summary") or "", d.get("when") or "",
                      d.get("body") or "", d.get("version") or "1", now()))
                 bump()
@@ -1120,6 +1128,12 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/skill/delete":
                 d = self._body()
                 sk = d.get("skill", "")
+                row_ = one("SELECT source,origin_host FROM skills WHERE id=?", (sk,))
+                if row_ and (row_.get("source") or "hub") == "local":
+                    host = row_.get("origin_host") or "某台机器"
+                    raise Api(400, "这个技能是从「%s」的磁盘同步来的，在中枢删除会被重新同步。"
+                                   "要彻底删，请到那台机器的 ~/.kimi-code/skills/ 删掉对应目录；"
+                                   "只想让这个 agent 不用它，点「停用」即可。" % host)
                 run("DELETE FROM skills WHERE id=?", (sk,))
                 run("DELETE FROM agent_skills WHERE skill=?", (sk,))
                 bump()
