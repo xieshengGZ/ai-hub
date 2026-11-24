@@ -40,6 +40,7 @@ function show(id){
   if(id === 's-new' && SCREEN !== 's-new'){ try{ history.pushState({neu: 1}, '', '#new'); }catch(e){} }
   SCREEN = id;
   syncTabIndex(id);
+  if(id === 's-login') nxBootRun();
 }
 
 function placeholder(){
@@ -50,6 +51,41 @@ function placeholder(){
 }
 
 /* ---------- 登录 ---------- */
+let NX_DONE = false;
+function nxBootRun(){
+  const box = $('nxBoot'); if(!box || NX_DONE) return;
+  NX_DONE = true;
+  const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+  const lines = [
+    ['> 初始化核心 ', 'OK'],
+    ['> 载入 agent 注册表 ', 'OK'],
+    ['> 建立安全通道 ', 'OK'],
+    ['> 等待身份验证', '']
+  ];
+  if(reduce){
+    box.innerHTML = lines.map(l => '<div class="dim">' + esc(l[0]) +
+      (l[1] ? ' <span class="ok">' + l[1] + '</span>' : '') + '</div>').join('');
+    return;
+  }
+  let li = 0, ci = 0; const out = [];
+  const tick = () => {
+    if(li >= lines.length){
+      if(out.length) out[out.length - 1] = out[out.length - 1].replace('</div>', '<span class="cur"></span></div>');
+      box.innerHTML = out.join('');
+      return;
+    }
+    const [text, tail] = lines[li];
+    ci++;
+    box.innerHTML = out.join('') + '<div>' + esc(text.slice(0, ci)) + '<span class="cur"></span></div>';
+    if(ci >= text.length){
+      out.push('<div>' + esc(text) + (tail ? ' <span class="ok">' + tail + '</span>' : '') + '</div>');
+      li++; ci = 0;
+      setTimeout(tick, 240);
+    }else setTimeout(tick, 16);
+  };
+  tick();
+}
+
 async function login(){
   const pwd = $('pwd').value;
   $('loginErr').textContent = '';
@@ -58,7 +94,11 @@ async function login(){
       body: JSON.stringify({password: pwd})});
     document.body.classList.remove('login-mode');
     boot();
-  }catch(e){ $('loginErr').textContent = e.message === '401' ? '口令不对' : e.message; }
+  }catch(e){
+    $('loginErr').textContent = e.message === '401' ? '口令不对，请重试' : e.message;
+    const nx = document.querySelector('.nx');
+    if(nx){ nx.classList.add('shake'); setTimeout(() => nx.classList.remove('shake'), 420); }
+  }
 }
 function logout(){ api('api/logout', {method:'POST'}).finally(()=>{ location.reload(); }); }
 

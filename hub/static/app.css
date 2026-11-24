@@ -219,3 +219,94 @@ svg{display:block}
 .slash .it.cur{background:#F1F5F2}
 .slash .it b{font-size:14px;font-weight:600;color:var(--teal);flex:none}
 .slash .it span{font-size:12.5px;color:var(--sub);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+
+/* ============ 登录页：Nexus 启动界面 ============ */
+body.login-mode{background:#04070a}
+#s-login{background:#04070a}
+.nx{position:relative;flex:1;display:flex;align-items:center;justify-content:center;overflow:hidden;
+  font-family:"SF Mono",ui-monospace,Menlo,Consolas,"Noto Sans CJK SC",monospace;color:#c8f5e0}
+.nx-bg{position:absolute;inset:-20%;pointer-events:none;
+  background:
+    radial-gradient(60% 40% at 50% 0%, rgba(24,220,160,.16), transparent 70%),
+    radial-gradient(45% 35% at 90% 90%, rgba(0,140,255,.10), transparent 70%),
+    linear-gradient(180deg,#04070a 0%,#050b09 55%,#04070a 100%);
+  animation: nxdrift 46s ease-in-out infinite alternate}
+@keyframes nxdrift{from{transform:translate3d(-1.5%,-1%,0) scale(1.02)}to{transform:translate3d(1.5%,1%,0) scale(1.05)}}
+.nx-bg::before{content:"";position:absolute;inset:0;opacity:.22;
+  background-image:linear-gradient(rgba(60,255,200,.14) 1px,transparent 1px),
+                   linear-gradient(90deg,rgba(60,255,200,.14) 1px,transparent 1px);
+  background-size:52px 52px;
+  mask-image:radial-gradient(60% 55% at 50% 45%,#000 30%,transparent 85%);
+  -webkit-mask-image:radial-gradient(60% 55% at 50% 45%,#000 30%,transparent 85%)}
+.nx-scan{position:absolute;inset:0;pointer-events:none;opacity:.5;
+  background:repeating-linear-gradient(180deg,rgba(0,0,0,.22) 0 1px,transparent 1px 3px)}
+.nx-scan::after{content:"";position:absolute;left:0;right:0;height:120px;
+  background:linear-gradient(180deg,transparent,rgba(63,255,205,.05),transparent);
+  animation:nxscan 7s linear infinite}
+@keyframes nxscan{from{transform:translateY(-140px)}to{transform:translateY(100vh)}}
+
+.nx-wrap{position:relative;width:100%;max-width:400px;padding:26px 24px 22px;margin:0 18px;
+  border:1px solid rgba(63,255,205,.18);border-radius:14px;
+  background:linear-gradient(180deg,rgba(6,16,14,.92),rgba(4,10,9,.86));
+  box-shadow:0 0 0 1px rgba(0,0,0,.4),0 24px 60px rgba(0,0,0,.55),inset 0 0 42px rgba(20,255,190,.04);
+  backdrop-filter:blur(2px)}
+.nx-wrap::before,.nx-wrap::after{content:"";position:absolute;width:14px;height:14px;border:1px solid #3fffcb;opacity:.75}
+.nx-wrap::before{left:-1px;top:-1px;border-right:0;border-bottom:0}
+.nx-wrap::after{right:-1px;bottom:-1px;border-left:0;border-top:0}
+
+.nx-top{display:flex;align-items:center;gap:8px;font-size:10.5px;letter-spacing:.14em;color:#5fbf9d;margin-bottom:20px}
+.nx-dot{width:6px;height:6px;border-radius:50%;background:#3fffcb;box-shadow:0 0 10px #3fffcb;animation:nxpulse 2.4s ease-in-out infinite}
+@keyframes nxpulse{0%,100%{opacity:1}50%{opacity:.35}}
+.nx-ver{margin-left:auto;color:#3f7a68}
+
+.nx-brand{display:flex;gap:14px;align-items:center}
+.nx-mark{width:46px;height:46px;flex:none;display:flex;align-items:center;justify-content:center;
+  border:1px solid rgba(63,255,205,.5);border-radius:10px;color:#3fffcb;font-weight:700;font-size:17px;
+  letter-spacing:.06em;box-shadow:inset 0 0 18px rgba(63,255,205,.18),0 0 18px rgba(63,255,205,.12)}
+.nx-title{font-size:21px;font-weight:600;letter-spacing:.04em;color:#e8fff7;line-height:1.25;
+  text-shadow:0 0 18px rgba(63,255,205,.35)}
+.nx-sub{margin-top:4px;font-size:10px;letter-spacing:.28em;color:#4f9d85}
+
+.nx-boot{margin:18px 0 6px;min-height:62px;font-size:11.5px;line-height:1.75;color:#63d6ac;
+  white-space:pre-wrap;word-break:break-all}
+.nx-boot .dim{color:#3d7a68}
+.nx-boot .ok{color:#3fffcb}
+.nx-boot .cur{display:inline-block;width:6px;height:12px;background:#3fffcb;vertical-align:-1px;margin-left:2px;
+  animation:nxblink 1s steps(1) infinite}
+@keyframes nxblink{50%{opacity:0}}
+
+.nx-label{display:block;font-size:10px;letter-spacing:.2em;color:#4f9d85;margin-bottom:7px}
+.nx-field{position:relative;display:flex;align-items:center;gap:8px;padding:11px 12px;
+  border:1px solid rgba(63,255,205,.26);border-radius:8px;background:rgba(4,14,12,.72);
+  transition:border-color .2s,box-shadow .2s}
+.nx-field:focus-within{border-color:#3fffcb;box-shadow:0 0 0 1px rgba(63,255,205,.28),0 0 24px rgba(63,255,205,.18)}
+.nx-prompt{color:#3fffcb;font-size:14px;flex:none}
+.nx-field input{flex:1;min-width:0;border:0;outline:0;background:transparent;color:#dcfff3;
+  font:inherit;font-size:16px;letter-spacing:.06em}
+.nx-field input::placeholder{color:#3b6f60;letter-spacing:.1em}
+.nx-form button{margin-top:14px;width:100%;padding:13px;border:1px solid rgba(63,255,205,.55);border-radius:8px;
+  background:linear-gradient(180deg,rgba(63,255,205,.16),rgba(63,255,205,.06));color:#9dffe0;
+  font:inherit;font-size:14.5px;letter-spacing:.14em;cursor:pointer;
+  transition:background .18s,box-shadow .18s,color .18s}
+.nx-form button:hover,.nx-form button:focus-visible{background:rgba(63,255,205,.24);color:#eafff8;
+  box-shadow:0 0 22px rgba(63,255,205,.28)}
+.nx-form button b{font-weight:400;margin-left:2px}
+.nx-form .err{min-height:16px;margin-top:8px;font-size:11.5px;color:#ff7b7b;letter-spacing:.06em}
+.nx.shake .nx-field{animation:nxshake .32s}
+@keyframes nxshake{0%,100%{transform:translateX(0)}25%{transform:translateX(-6px)}75%{transform:translateX(6px)}}
+.nx-foot{margin-top:18px;display:flex;gap:8px;font-size:10px;letter-spacing:.16em;color:#3f7a68}
+.nx-foot .sep{opacity:.5}
+
+@media (prefers-reduced-motion: reduce){
+  .nx-bg,.nx-scan::after,.nx-dot,.nx-boot .cur{animation:none!important}
+}
+
+/* 登录页：桌面放大 + 标题一次性闪动 */
+@media (min-width:900px){
+  .nx-wrap{max-width:440px;padding:32px 30px 26px}
+  .nx-title{font-size:24px}
+  .nx-mark{width:52px;height:52px;font-size:19px}
+  .nx-boot{min-height:70px;font-size:12px}
+}
+.nx-title{animation:nxflick 1.4s steps(1) 1}
+@keyframes nxflick{0%,12%,14%,18%{opacity:.35;text-shadow:1px 0 #ff3d6e,-1px 0 #3fffcb}16%,100%{opacity:1}}
