@@ -1266,6 +1266,23 @@ try{ $('fileInput').disabled = true; }catch(e){}
 if($('chat')){
   $('chat').addEventListener('scroll', () => { window.STICK = nearBottom(); }, {passive:true});
 }
+function checkWebVer(){
+  const m = /app\.js\?v=(\d+)/.exec([...document.scripts].map(x => x.src).join(' '));
+  const mine = m ? m[1] : '';
+  fetch('api/webver', {credentials:'same-origin'}).then(r => r.json()).then(d => {
+    if(d && d.v && mine && d.v !== mine){
+      let b = document.getElementById('verBar');
+      if(!b){
+        b = document.createElement('div');
+        b.id = 'verBar';
+        b.innerHTML = '界面有新版本 <b>点此刷新</b>';
+        b.onclick = () => location.reload();
+        document.body.appendChild(b);
+      }
+    }
+  }).catch(() => {});
+}
+setTimeout(checkWebVer, 1500);
 paintMode(); bindInput(); boot(); startEvents();
 document.addEventListener('input', e => {
   if(e.target && e.target.id === 'qInput'){

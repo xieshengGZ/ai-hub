@@ -845,6 +845,14 @@ class Handler(BaseHTTPRequestHandler):
                 if not h or not h["token"] or not hmac.compare_digest(tok, h["token"]):
                     return self._json({"error": "token 不对"}, 403)
                 return self._install_script(name, tok)
+            if p == "/api/webver":
+                try:
+                    idx = open(os.path.join(STATIC, "index.html"), encoding="utf-8").read()
+                    m = re.search(r"app\.js\?v=(\d+)", idx)
+                    v = m.group(1) if m else ""
+                except OSError:
+                    v = ""
+                return self._json({"v": v})
             if p == "/api/health":
                 return self._json({"ok": True, "ts": now()})
             self._json({"error": "not found"}, 404)
