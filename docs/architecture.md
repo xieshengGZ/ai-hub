@@ -6,7 +6,7 @@
 |---|---|---|
 | **Hub** | 一台服务器 | HTTP 服务 + SQLite + 静态前端；维护账号、agent、会话、任务、文件；给 Daemon 下发任务 |
 | **Daemon** | 每台被托管的机器 | 长轮询领任务、为每个 agent 拉起一个 `kimi acp` 子进程、流式回传、扫产出、心跳、本地记账 |
-| **Web** | 浏览器 / PWA | 原生 JS 单页应用，无构建步骤；和 Hub 走同源 JSON 接口 |
+| **Web / Android / iOS** | 浏览器 / PWA | 同一套原生 JS 单页应用，无构建步骤；桌面浏览器直接用，Android 与 iOS 通过 PWA 安装到主屏幕；和 Hub 走同源 JSON 接口 |
 
 Hub 不保存模型密钥；Daemon 不保存业务数据。两边唯一的凭据是 **host token**。
 
