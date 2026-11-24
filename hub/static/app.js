@@ -709,26 +709,33 @@ async function loadSkills(){
   if(!CUR){ $('skillList').innerHTML = '<div class="hint">先打开一个会话。</div>'; return; }
   const d = await api('api/skills?agent=' + encodeURIComponent(CUR.id));
   const ss = d.skills || [];
-  $('skillCount').textContent = ss.filter(s => s.enabled).length + '/' + ss.length;
-  $('skillList').innerHTML = ss.length ? ss.map(s => {
-    const local = (s.source || 'hub') === 'local';
-    const tag = local ? '<span class="tag" title="来自本机磁盘">本机同步</span>' : '<span class="tag" title="在中枢创建">中枢</span>';
-    const right = local
-      ? `<span class="r" style="color:#B07C33;margin-left:10px" onclick="toast('这是从「${escAttr(s.origin_host || '本机')}」的 ~/.kimi-code/skills/ 同步来的；要彻底删除请到那台机器上删目录')">本机管理</span>`
-      : `<span class="r" style="color:#A33A2B;margin-left:10px" onclick="deleteSkill('${s.id}')">全局删除</span>`;
-    return `<div class="item"><span class="nm">/${esc(s.id)} · ${esc(s.name)} ${tag}<br>` +
-      `<span style="font-size:12px;color:#8B949A">${esc(s.summary || '')}</span></span>` +
-      `<span class="r" style="color:${s.enabled ? '#0F5B63' : '#9AA39D'}" onclick="toggleSkill('${s.id}', ${s.enabled ? 0 : 1})">${s.enabled ? '已启用' : '未启用'}</span>` +
-      right + `</div>`;
-  }).join('')
-    : '<div class="hint">还没有技能。可以「新建」，也可以「导入 SKILL.md」，或者让 agent 装到 ~/.kimi-code/skills 后自动同步过来。</div>';
+  const on = ss.filter(s => s.enabled);
+  const off = ss.filter(s => !s.enabled);
+  $('skillCount').textContent = on.length + '/' + ss.length;
+  const row = (s, right) =>
+    `<div class="item"><span class="nm">/${esc(s.id)} · ${esc(s.name)}<br>` +
+    `<span style="font-size:12px;color:#8B949A">${esc(s.summary || '')}</span></span>${right}</div>`;
+  const sec = (title, arr) => arr.length
+    ? `<div class="hint" style="padding:10px 16px 4px">${title}（${arr.length}）</div>` + arr.join('')
+    : '';
+  const installed = sec('已安装', on.map(s => row(s,
+    `<span class="r" style="color:#A33A2B" onclick="skillOp('uninstall','${s.id}')">卸载</span>`)));
+  const available = sec('本机可用', off.map(s => row(s,
+    `<span class="r" style="color:#0F5B63" onclick="skillOp('install','${s.id}')">安装</span>` +
+    (s.installed_count ? '' :
+      `<span class="r" style="color:#A33A2B;margin-left:12px" onclick="skillOp('delete','${s.id}')">删除</span>`))));
+  $('skillList').innerHTML = (installed + available) ||
+    '<div class="hint">这台机器的技能库是空的。可以让某个 agent 写一个技能：把 SKILL.md 放到 ~/aihub/skills/<id>/。</div>';
 }
 
-async function toggleSkill(id, on){
-  await api('api/skill/bind', {method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({agent: CUR.id, skill: id, on: !!on})});
-  toast(on ? '已启用，下一次对话生效' : '已关闭');
-  loadSkills();
+async function skillOp(op, id){
+  if(op === 'delete' && !confirm('从本机技能库里删除 /' + id + '？\n只在没有任何 agent 装着时才会成功。')) return;
+  try{
+    await api('api/skill/op', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({op, agent: CUR.id, skill: id})});
+    toast(op === 'install' ? '正在安装…' : op === 'uninstall' ? '正在卸载…' : '正在删除…');
+    setTimeout(loadSkills, 2500);
+  }catch(e){ alert(e.message); }
 }
 
 async function deleteSkill(id){

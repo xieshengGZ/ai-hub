@@ -429,44 +429,42 @@ def daemon_hb(d):
             (d["host"], now()))
     for a in d.get("agents", []):
         run("UPDATE agents SET status=?, seen=? WHERE id=?", (a.get("state", "on"), now(), a.get("id")))
-    # 本机磁盘上的技能（~/.kimi-code/skills 与各 agent 的 skills/）同步进中枢
+    # 共享技能库（每台机器 ~/aihub/skills）+ 各 agent 的安装情况
     changed = 0
-    for sk in d.get("skills") or []:
-        sid = re.sub(r"[^a-z0-9_-]", "-", (sk.get("id") or "").lower()).strip("-")[:48]
-        if not sid:
-            continue
-        run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created,source,origin_host)
-               VALUES(?,?,?,?,?,'1',?,'local',?)
-               ON CONFLICT(id) DO UPDATE SET name=excluded.name, summary=excluded.summary,
-                                             when_to_use=excluded.when_to_use, body=excluded.body,
-                                             source='local', origin_host=excluded.origin_host""",
-            (sid, (sk.get("name") or sid)[:80], (sk.get("summary") or "")[:300],
-             (sk.get("when_to_use") or "")[:300], sk.get("body") or "", now(),
-             d.get("host") or ""))
-        scope = sk.get("scope") or ""
-        if scope == "user":
-            targets = [r["id"] for r in rows(
-                "SELECT id FROM agents WHERE host=? AND deleted=0", (d.get("host") or "",))]
-        elif scope:
-            targets = [scope]
-        else:
-            targets = []
-        for aid in targets:
-            run("""INSERT INTO agent_skills(agent,skill,enabled) VALUES(?,?,1)
-                   ON CONFLICT(agent,skill) DO NOTHING""", (aid, sid))
-        changed += 1
-    if d.get("skills") is not None:
-        # 该主机上报的是完整快照：磁盘上已经没有的技能，中枢里的 local 记录一并清掉
-        host = d.get("host") or ""
+    host_ = d.get("host") or ""
+    store = d.get("skill_store")
+    if store is not None:
         keep = set()
-        for sk in d.get("skills") or []:
-            sid = re.sub(r"[^a-z0-9_-]", "-", (sk.get("id") or "").lower()).strip("-")[:48]
-            if sid:
-                keep.add(sid)
-        for r in rows("SELECT id FROM skills WHERE source='local' AND origin_host=?", (host,)):
+        for sk in store:
+            sid = re.sub(r"[^\w.-]", "-", (sk.get("id") or "").strip(), flags=re.U).strip("-")[:48]
+            if not sid:
+                continue
+            keep.add(sid)
+            run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created,source,origin_host)
+                   VALUES(?,?,?,?,?,'1',?,'local',?)
+                   ON CONFLICT(id) DO UPDATE SET name=excluded.name, summary=excluded.summary,
+                                                 when_to_use=excluded.when_to_use,
+                                                 source='local', origin_host=excluded.origin_host""",
+                (sid, (sk.get("name") or sid)[:80], (sk.get("summary") or "")[:300],
+                 (sk.get("when_to_use") or "")[:300], "", now(), host_))
+            changed += 1
+        for r in rows("SELECT id FROM skills WHERE source='local' AND origin_host=?", (host_,)):
             if r["id"] not in keep:
                 run("DELETE FROM skills WHERE id=?", (r["id"],))
                 run("DELETE FROM agent_skills WHERE skill=?", (r["id"],))
+                changed += 1
+    inst = d.get("skill_installs")
+    if inst is not None:
+        host_skills = [r["id"] for r in rows("SELECT id FROM skills WHERE origin_host=?", (host_,))]
+        for aid in [r["id"] for r in rows("SELECT id FROM agents WHERE host=? AND deleted=0", (host_,))]:
+            want = set(inst.get(aid) or []) & set(host_skills)
+            have = set(r["skill"] for r in rows("SELECT skill FROM agent_skills WHERE agent=?", (aid,))) & set(host_skills)
+            for s2 in want - have:
+                run("INSERT INTO agent_skills(agent,skill,enabled) VALUES(?,?,1) "
+                    "ON CONFLICT(agent,skill) DO UPDATE SET enabled=1", (aid, s2))
+                changed += 1
+            for s2 in have - want:
+                run("DELETE FROM agent_skills WHERE agent=? AND skill=?", (aid, s2))
                 changed += 1
     if changed:
         bump()
@@ -747,13 +745,18 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed():
                     return
                 ag = q.get("agent", [""])[0]
-                allsk = rows("SELECT id,name,summary,when_to_use,version,source,origin_host "
-                             "FROM skills ORDER BY created DESC")
-                bound = {r["skill"]: r["enabled"] for r in rows(
-                    "SELECT skill, enabled FROM agent_skills WHERE agent=?", (ag,))} if ag else {}
+                host = (one("SELECT host FROM agents WHERE id=?", (ag,)) or {}).get("host", "")
+                allsk = rows("""SELECT id,name,summary,when_to_use,version,source,origin_host
+                                FROM skills WHERE origin_host=? ORDER BY id""", (host,))
+                installed = set(r["skill"] for r in rows(
+                    "SELECT skill FROM agent_skills WHERE agent=? AND enabled=1", (ag,))) if ag else set()
+                counts = {}
+                for r in rows("SELECT skill, COUNT(*) n FROM agent_skills WHERE enabled=1 GROUP BY skill"):
+                    counts[r["skill"]] = r["n"]
                 for k in allsk:
-                    k["enabled"] = bool(bound.get(k["id"], 0))
-                return self._json({"skills": allsk})
+                    k["enabled"] = k["id"] in installed
+                    k["installed_count"] = counts.get(k["id"], 0)
+                return self._json({"skills": allsk, "host": host})
             if p == "/api/files":
                 if not self._authed():
                     return
@@ -1126,6 +1129,31 @@ class Handler(BaseHTTPRequestHandler):
                      d.get("body") or "", d.get("version") or "1", now()))
                 bump()
                 return self._json({"ok": True, "id": sid})
+            if p == "/api/skill/op":
+                d = self._body()
+                op, agent_, sid = d.get("op"), d.get("agent") or "", d.get("skill") or ""
+                sk = one("SELECT id,origin_host FROM skills WHERE id=?", (sid,))
+                if not sk:
+                    raise Api(404, "没有这个技能")
+                if op == "delete":
+                    n = one("SELECT COUNT(*) n FROM agent_skills WHERE skill=? AND enabled=1", (sid,))["n"]
+                    if n:
+                        raise Api(400, "还有 %d 个 agent 装着它，先卸载完再删" % n)
+                    run("INSERT INTO daemon_ops(agent, op, path, ts) VALUES(?,?,?,?)",
+                        ("", "skill_delete", sid, now()))
+                    bump()
+                    return self._json({"ok": True})
+                if op not in ("install", "uninstall"):
+                    raise Api(400, "op 只能是 install / uninstall / delete")
+                ag = one("SELECT id,host FROM agents WHERE id=? AND deleted=0", (agent_,))
+                if not ag:
+                    raise Api(404, "没有这个 agent")
+                if (ag.get("host") or "") != (sk.get("origin_host") or ""):
+                    raise Api(400, "这个技能不在该 agent 所在机器的库里")
+                run("INSERT INTO daemon_ops(agent, op, path, ts) VALUES(?,?,?,?)",
+                    (agent_, "skill_" + op, sid, now()))
+                bump()
+                return self._json({"ok": True})
             if p == "/api/skill/bind":
                 d = self._body()
                 ag, sk = d.get("agent", ""), d.get("skill", "")

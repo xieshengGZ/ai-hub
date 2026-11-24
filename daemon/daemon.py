@@ -12,6 +12,8 @@ TOKEN = CONF["token"]
 NAME = CONF.get("name") or "未命名主机"
 LOG_DIR = os.path.expanduser(CONF.get("log_dir", "~/aihub/logs"))
 os.makedirs(LOG_DIR, exist_ok=True)
+STORE = os.path.join(os.path.expanduser("~"), "aihub", "skills")
+os.makedirs(STORE, exist_ok=True)
 
 # pythonw（Windows 计划任务常用）没有控制台，stdout/stderr 是 None，
 # 任何 print / sys.stderr.write 都会直接抛异常，所以先兜住。
@@ -73,29 +75,10 @@ class Acp:
         os.makedirs(cwd, exist_ok=True)
 
     def materialize_skills(self):
-        sig = ",".join(sorted(x["id"] + ":" + str(x.get("version", "")) for x in (self.agent.get("skills") or [])))
-        if sig != self.skills_sig and self.p:
-            sys.stderr.write("技能变更，重启实例: %s\n" % self.agent["id"])
-            self.kill()
-        self.skills_sig = sig
-        """把启用中的技能写到 <cwd>/skills/ 并在 AGENTS.md 里列出。"""
+        """只写 AGENTS.md 的人格；技能由共享库链接提供，kimi 用 --skills-dir 只认那个目录。"""
         cwd = self.agent["cwd"]
-        skills = self.agent.get("skills") or []
-        base = os.path.join(cwd, "skills")
-        os.makedirs(base, exist_ok=True)
-        for sk in skills:
-            d = os.path.join(base, sk["id"])
-            os.makedirs(d, exist_ok=True)
-            with open(os.path.join(d, "SKILL.md"), "w", encoding="utf-8") as f:
-                f.write("# %s\n\n> %s\n\n**何时使用**：%s\n\n%s\n" % (
-                    sk.get("name", ""), sk.get("summary", ""), sk.get("when_to_use", ""),
-                    sk.get("body", "")))
+        os.makedirs(cwd, exist_ok=True)
         lines = ["# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", ""))]
-        if skills:
-            lines.append("\n## 可用技能\n\n需要时先读对应文件，再按里面的步骤做：\n")
-            for sk in skills:
-                lines.append("- **%s**：%s（何时用：%s） → `skills/%s/SKILL.md`\n" % (
-                    sk.get("name", ""), sk.get("summary", ""), sk.get("when_to_use", ""), sk["id"]))
         with open(os.path.join(cwd, "AGENTS.md"), "w", encoding="utf-8") as f:
             f.write("".join(lines))
 
@@ -112,7 +95,9 @@ class Acp:
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             kw["startupinfo"] = si
-        self.p = subprocess.Popen(kimi_argv() + ["acp"], cwd=self.agent["cwd"],
+        sk_dir = os.path.join(self.agent["cwd"], "skills")
+        os.makedirs(sk_dir, exist_ok=True)
+        self.p = subprocess.Popen(kimi_argv() + ["--skills-dir", sk_dir, "acp"], cwd=self.agent["cwd"],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, bufsize=1,
                                   encoding="utf-8", errors="replace", **kw)
@@ -484,59 +469,115 @@ def post_usage():
             sys.stderr.write("usage post failed: %r\n" % e)
 
 
-_SKILL_SIG = ["-"]
+def _parse_skill(path, sid):
+    try:
+        txt = open(path, encoding="utf-8", errors="replace").read()
+    except OSError:
+        return None
+    name, summary, when = sid, "", ""
+    for line in txt.splitlines()[:30]:
+        t = line.strip()
+        if t.startswith("name:") and len(t) > 5:
+            name = t[5:].strip()
+        elif t.startswith("description:"):
+            summary = t[12:].strip()
+        elif t.startswith("whenToUse:"):
+            when = t[10:].strip()
+    return {"id": sid, "name": name, "summary": summary, "when_to_use": when}
 
 
-def scan_local_skills():
-    """把本机 ~/.kimi-code/skills 和各 agent 工作目录 skills/ 下的技能报给中枢。
-    每 20 秒随心跳看一眼，只有文件集合/时间戳变了才上报。"""
+def skill_store():
+    """本机共享技能库：~/aihub/skills/<id>/SKILL.md"""
+    out = []
+    if not os.path.isdir(STORE):
+        return out
+    for d in sorted(os.listdir(STORE)):
+        p = os.path.join(STORE, d, "SKILL.md")
+        if os.path.isfile(p):
+            sk = _parse_skill(p, d)
+            if sk:
+                out.append(sk)
+    return out
 
-    def parse(path):
-        try:
-            txt = open(path, encoding="utf-8", errors="replace").read()
-        except OSError:
-            return None
-        sid = os.path.basename(os.path.dirname(path))
-        name, summary, when = sid, "", ""
-        for line in txt.splitlines()[:30]:
-            t = line.strip()
-            if t.startswith("name:") and len(t) > 5:
-                name = t[5:].strip()
-            elif t.startswith("description:"):
-                summary = t[12:].strip()
-            elif t.startswith("whenToUse:"):
-                when = t[10:].strip()
-        return {"id": sid, "name": name, "summary": summary, "when_to_use": when,
-                "body": txt[:20000]}
 
-    roots = [(os.path.join(os.path.expanduser("~"), ".kimi-code", "skills"), "user")]
+def skill_installs():
+    """{agent: [已安装的 skill id]}，判定方式是链接指向共享库"""
+    res = {}
     with LOCK:
         cwds = dict(WHERES)
     for aid, cwd in cwds.items():
-        if cwd:
-            roots.append((os.path.join(cwd, "skills"), aid))
-    out, sig_parts = {}, []
-    for root, scope in roots:
-        if not os.path.isdir(root):
+        base = os.path.join(cwd or "", "skills")
+        if not cwd or not os.path.isdir(base):
             continue
-        for d in sorted(os.listdir(root)):
-            p = os.path.join(root, d, "SKILL.md")
-            if not os.path.isfile(p):
-                continue
+        got = []
+        for d in os.listdir(base):
+            p = os.path.join(base, d)
             try:
-                st = os.stat(p)
-                sig_parts.append("%s|%d|%d" % (p, int(st.st_mtime), st.st_size))
+                if os.path.realpath(p) == os.path.realpath(os.path.join(STORE, d)):
+                    got.append(d)
             except OSError:
-                continue
-            sk = parse(p)
-            if sk:
-                sk["scope"] = scope
-                out[sk["id"]] = sk
-    sig = hashlib.sha256("\n".join(sig_parts).encode()).hexdigest()
-    if sig == _SKILL_SIG[0]:
-        return None
-    _SKILL_SIG[0] = sig
-    return list(out.values())
+                pass
+        if got:
+            res[aid] = sorted(got)
+    return res
+
+
+def link_skill(cwd, sid):
+    src = os.path.join(STORE, sid)
+    if not cwd or not sid:
+        return "缺少 agent 目录或技能 id"
+    if not os.path.isdir(src):
+        return "共享库里没有这个技能"
+    base = os.path.join(resolve_cwd({"id": "x", "cwd": cwd}), "skills")
+    os.makedirs(base, exist_ok=True)
+    dst = os.path.join(base, sid)
+    if os.path.islink(dst) or os.path.isdir(dst):
+        unlink_skill(cwd, sid)
+    if os.name == "nt":
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", dst, src],
+                           capture_output=True, text=True)
+        return "ok" if r.returncode == 0 else ((r.stderr or r.stdout or "mklink 失败").strip()[:200])
+    os.symlink(src, dst, target_is_directory=True)
+    return "ok"
+
+
+def unlink_skill(cwd, sid):
+    dst = os.path.join(cwd or "", "skills", sid)
+    if not (os.path.islink(dst) or os.path.isdir(dst)):
+        return "没有安装"
+    if os.path.islink(dst):
+        os.unlink(dst)
+    else:
+        try:
+            os.rmdir(dst)          # Windows junction：只删链接，不动目标
+        except OSError:
+            shutil.rmtree(dst, ignore_errors=True)
+    return "ok"
+
+
+def delete_store_skill(sid):
+    sid = "".join(ch for ch in (sid or "") if ch not in "/\\\x00")
+    p = os.path.join(STORE, sid)
+    if not os.path.isdir(p):
+        return "库里没有这个技能"
+    shutil.rmtree(p, ignore_errors=True)
+    return "ok"
+
+
+def migrate_user_skills():
+    """把 Kimi 用户级技能复制一份进共享库（不动原文件，个人 CLI 不受影响）。"""
+    src = os.path.join(os.path.expanduser("~"), ".kimi-code", "skills")
+    if not os.path.isdir(src):
+        return
+    for d in os.listdir(src):
+        s_dir = os.path.join(src, d)
+        t_dir = os.path.join(STORE, d)
+        if os.path.isfile(os.path.join(s_dir, "SKILL.md")) and not os.path.exists(t_dir):
+            try:
+                shutil.copytree(s_dir, t_dir)
+                sys.stderr.write("migrated skill: %s\n" % d)
+            except OSError as e:
+                sys.stderr.write("migrate %s failed: %r\n" % (d, e))
 
 
 # 进程启动时加载的这份代码的指纹：用来判断“磁盘上是新的、但跑的还是旧的”
@@ -554,7 +595,6 @@ def self_update():
         if v.get("sha256") == cur and cur == RUNNING_HASH:
             return
         if v.get("sha256") == cur:
-            # 文件已经是新的，但进程跑的还是旧的：直接重启
             sys.stderr.write("self-update: reloading new code\n")
             sys.stderr.flush()
             os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
@@ -586,10 +626,8 @@ def heartbeat():
             alive = bool(p and p.p and p.p.poll() is None)
             state = "busy" if aid in ACTIVE else ("on" if alive else "off")
             agents.append({"id": aid, "state": state})
-    payload = {"agents": agents, "host": NAME}
-    sk = scan_local_skills()
-    if sk is not None:
-        payload["skills"] = sk
+    payload = {"agents": agents, "host": NAME,
+               "skill_store": skill_store(), "skill_installs": skill_installs()}
     try:
         http("/api/daemon/hb", payload, timeout=15)
     except Exception as e:
@@ -620,6 +658,16 @@ def refresh_agents():
                     a = PROCS.pop(op["agent"], None)
                     if a:
                         a.kill()
+                    if op["op"] in ("skill_install", "skill_uninstall", "skill_delete"):
+                        sid = op.get("path") or ""
+                        aid = op.get("agent") or ""
+                        if op["op"] == "skill_install":
+                            msg = link_skill(WHERES.get(aid) or "", sid)
+                        elif op["op"] == "skill_uninstall":
+                            msg = unlink_skill(WHERES.get(aid) or "", sid)
+                        else:
+                            msg = delete_store_skill(sid)
+                        sys.stderr.write("skill op %s %s/%s: %s\n" % (op["op"], aid, sid, msg))
                     if op["op"] == "purge_dir":
                         cwd = op.get("path") or WHERES.get(op["agent"])
                         if cwd and os.path.isdir(cwd) and cwd.startswith("/home/ubuntu/aihub/agents/"):
@@ -646,6 +694,7 @@ def refresh_agents():
 
 
 def main():
+    migrate_user_skills()
     print("daemon -> %s" % HUB, flush=True)
     try:
         http("/api/daemon/recover", {}, timeout=15)

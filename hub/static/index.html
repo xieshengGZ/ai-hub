@@ -186,14 +186,7 @@
     <div class="sh"><b>技能</b><button class="x" onclick="closeSheet()"><svg width="20" height="20"><use href="#i-close"/></svg></button></div>
     <div class="hint">技能会写进这个 agent 的目录并在启动时加载；开关立即生效，下一次对话使用新配置。</div>
     <div id="skillList"></div>
-    <div style="padding:10px 16px 4px;display:flex;gap:8px">
-      <input id="skName" placeholder="新技能名，例如 部署检查"
-        style="flex:1;padding:10px 12px;border:1px solid #D8DED6;border-radius:10px;font:inherit;font-size:14.5px;outline:0">
-      <button class="pick" style="flex:none;padding:10px 14px" onclick="newSkill()">新建</button>
-      <button class="pick" style="flex:none;padding:10px 14px" onclick="importSkillPick()">导入 SKILL.md</button>
-    </div>
-    <div class="hint" style="padding:0 16px 8px">「本机同步」的技能以那台机器的磁盘为准：停用只影响当前 agent，彻底删除要去机器上删目录。</div>
-    <input id="skFile" type="file" accept=".md,.markdown,text/markdown" class="vhide" onchange="importSkill(this)">
+    <div class="hint" style="padding:0 16px 10px">技能存在每台机器的共享库（~/aihub/skills）。「安装」= 在 agent 目录下建一个链接；「卸载」只删链接；只有没有任何 agent 装着时才能从库里删除。</div>
   </div>
 
   <!-- 团队 -->
@@ -220,6 +213,6 @@
     <div id="artList"></div>
   </div>
 </div>
-<script src="app.js?v=56"></script>
+<script src="app.js?v=57"></script>
 </body>
 </html>
