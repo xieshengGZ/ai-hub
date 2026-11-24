@@ -165,7 +165,7 @@ async function openAgent(id){
   show('s-chat');
   document.body.classList.remove('login-mode');
   try{ await pull(true); }catch(e){ $('chatSub').textContent = '加载失败：' + e.message; }
-  loadSkillCache();
+  loadSkillCache(); loadFileCache();
   try{ history.pushState({chat: id}, '', '#' + id); }catch(e){}
 }
 
@@ -204,7 +204,7 @@ async function refreshChat(){
 
 function back(){
   clearTimers();
-  closeSlash();
+  closeSlash(); closeAt();
   if(history.state && history.state.chat){
     try{ history.back(); return; }catch(e){}
   }
@@ -476,7 +476,7 @@ function inpText(){
 }
 function inpClear(){
   const el = $('inp');
-  closeSlash();
+  closeSlash(); closeAt();
   el.textContent = '';
   el.style.height = '';
   el.classList.add('is-empty');
@@ -551,6 +551,56 @@ function useSkill(i){
   el.style.height = 'auto';
   el.style.height = Math.min(el.scrollHeight, 110) + 'px';
   closeSlash();
+  el.focus();
+  try{ const r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
+       const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }catch(e){}
+}
+
+/* ---------- @ 文件 ---------- */
+let FILES = [], AT = [], AT_IDX = 0;
+async function loadFileCache(){
+  if(!CUR){ FILES = []; return; }
+  try{
+    const d = await api('api/files?agent=' + encodeURIComponent(CUR.id));
+    FILES = (d.files || []).slice(0, 30);
+  }catch(e){ FILES = []; }
+}
+function closeAt(){ AT = []; AT_IDX = 0; const m = $('atMenu'); if(m){ m.classList.remove('on'); m.innerHTML = ''; } }
+function atPaint(){
+  const m = $('atMenu');
+  if(!m || !AT.length){ closeAt(); return; }
+  m.innerHTML = '<div class="hd">文件 · ↑↓ 选择，回车插入，Esc 取消</div>' +
+    AT.map((f, i) => `<div class="it${i === AT_IDX ? ' cur' : ''}" onclick="useFile(${i})">` +
+      `<b>@${esc(f.name)}</b><span>${f.msg ? '已发过' : '待发'} · ${(f.size/1024).toFixed(0)} KB</span></div>`).join('');
+  m.classList.add('on');
+}
+function atQuery(){
+  const t = inpText();
+  const m = /(?:^|\s)@([^\s@]*)$/.exec(t);
+  return m ? m[1] : null;
+}
+function atCheck(){
+  const q = atQuery();
+  if(q === null || !FILES.length){ closeAt(); return; }
+  const ql = q.toLowerCase();
+  AT = FILES.filter(f => (f.name || '').toLowerCase().includes(ql)).slice(0, 8);
+  if(!AT.length){ closeAt(); return; }
+  if(AT_IDX >= AT.length) AT_IDX = 0;
+  atPaint();
+}
+function useFile(i){
+  const f = AT[i || 0];
+  if(!f) return;
+  const el = $('inp');
+  const t = inpText();
+  const m = /(^|[\s])@[^\s@]*$/.exec(t);
+  const head = m ? t.slice(0, m.index + m[1].length) : t + ' ';
+  el.textContent = head + '@' + f.name + ' ';
+  el.classList.remove('is-empty');
+  $('btnSend').disabled = false;
+  el.style.height = 'auto';
+  el.style.height = Math.min(el.scrollHeight, 110) + 'px';
+  closeAt();
   el.focus();
   try{ const r = document.createRange(); r.selectNodeContents(el); r.collapse(false);
        const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }catch(e){}
@@ -1033,7 +1083,7 @@ function bindInput(){
     const t = inpText();
     ta.classList.toggle('is-empty', !t.trim());
     $('btnSend').disabled = !t.trim();
-    if(!COMPOSING) slashCheck();
+    if(!COMPOSING){ slashCheck(); atCheck(); }
   });
   ta.addEventListener('paste', (e) => {
     e.preventDefault();
@@ -1043,6 +1093,12 @@ function bindInput(){
   ta.addEventListener('compositionstart', () => { COMPOSING = true; });
   ta.addEventListener('compositionend', () => { COMPOSING = false; slashCheck(); });
   ta.addEventListener('keydown', (e) => {
+    if(AT.length){
+      if(e.key === 'ArrowDown'){ e.preventDefault(); AT_IDX = (AT_IDX + 1) % AT.length; atPaint(); return; }
+      if(e.key === 'ArrowUp'){ e.preventDefault(); AT_IDX = (AT_IDX - 1 + AT.length) % AT.length; atPaint(); return; }
+      if(e.key === 'Enter' || e.key === 'Tab'){ e.preventDefault(); useFile(AT_IDX); return; }
+      if(e.key === 'Escape'){ e.preventDefault(); closeAt(); return; }
+    }
     if(SLASH.length){
       if(e.key === 'ArrowDown'){ e.preventDefault(); SLASH_IDX = (SLASH_IDX + 1) % SLASH.length; slashPaint(); return; }
       if(e.key === 'ArrowUp'){ e.preventDefault(); SLASH_IDX = (SLASH_IDX - 1 + SLASH.length) % SLASH.length; slashPaint(); return; }
