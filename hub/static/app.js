@@ -608,6 +608,49 @@ function useSkill(i){
        const sel = window.getSelection(); sel.removeAllRanges(); sel.addRange(r); }catch(e){}
 }
 
+/* ---------- 拖拽 / 粘贴上传 ---------- */
+(function(){
+  let dragDepth = 0;
+  const hint = () => {
+    let h = document.getElementById('dropHint');
+    if(!h){
+      h = document.createElement('div');
+      h.id = 'dropHint';
+      h.textContent = '松开即可上传到当前会话';
+      document.body.appendChild(h);
+    }
+    return h;
+  };
+  const visible = () => CUR && !$('s-chat').classList.contains('hide');
+  document.addEventListener('dragenter', (e) => {
+    if(!visible() || !e.dataTransfer || !Array.from(e.dataTransfer.types || []).includes('Files')) return;
+    e.preventDefault(); dragDepth++; hint().classList.add('on');
+  });
+  document.addEventListener('dragover', (e) => {
+    if(!visible()) return;
+    if(e.dataTransfer && Array.from(e.dataTransfer.types || []).includes('Files')){ e.preventDefault(); e.dataTransfer.dropEffect = 'copy'; }
+  });
+  document.addEventListener('dragleave', (e) => {
+    if(!visible()) return;
+    dragDepth = Math.max(0, dragDepth - 1);
+    if(!dragDepth){ const h = document.getElementById('dropHint'); if(h) h.classList.remove('on'); }
+  });
+  document.addEventListener('drop', (e) => {
+    if(!visible() || !e.dataTransfer) return;
+    const files = Array.from(e.dataTransfer.files || []);
+    if(!files.length) return;
+    e.preventDefault();
+    dragDepth = 0;
+    const h = document.getElementById('dropHint'); if(h) h.classList.remove('on');
+    uploadFiles(files);
+  });
+  document.addEventListener('paste', (e) => {
+    if(!visible() || !e.clipboardData) return;
+    const files = Array.from(e.clipboardData.files || []);
+    if(files.length){ e.preventDefault(); uploadFiles(files); }
+  });
+})();
+
 /* ---------- @ 文件 ---------- */
 let FILES = [], AT = [], AT_IDX = 0;
 async function loadFileCache(){
@@ -682,9 +725,12 @@ function pick(kind){
 }
 async function uploadPicked(inp){
   const files = [...(inp.files || [])];
-  if(!files.length || !CUR) return;
   inp.value = '';
   setTimeout(() => { try{ inp.disabled = true; }catch(e){} }, 0);
+  await uploadFiles(files);
+}
+async function uploadFiles(files){
+  if(!files || !files.length || !CUR) return;
   let ok = 0, bad = [];
   for(let i = 0; i < files.length; i++){
     const f = files[i];
