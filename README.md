@@ -64,6 +64,7 @@ sudo -u aihub python3 hub/hub.py        # 先前台跑一次，确认能起
 | `data` | 数据目录（SQLite、附件、产出），默认 `~/aihub/data` |
 | `port` | 本机监听端口，默认 `8791`（建议只监听 127.0.0.1，前面放 nginx） |
 | `public_url` | 对外地址，如 `https://example.com/hub`；留空则按请求头推导（用于生成接入脚本） |
+| `secret` | 可选。会话 cookie 的签名密钥；不填则首次启动自动生成到 `<data>/secret`（600） |
 
 用 nginx 反代（见 `deploy/nginx.conf.example`），再用 systemd 托管（`deploy/aihub-hub.service`）：
 
