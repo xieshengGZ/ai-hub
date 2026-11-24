@@ -455,6 +455,19 @@ def daemon_hb(d):
             run("""INSERT INTO agent_skills(agent,skill,enabled) VALUES(?,?,1)
                    ON CONFLICT(agent,skill) DO NOTHING""", (aid, sid))
         changed += 1
+    if d.get("skills") is not None:
+        # 该主机上报的是完整快照：磁盘上已经没有的技能，中枢里的 local 记录一并清掉
+        host = d.get("host") or ""
+        keep = set()
+        for sk in d.get("skills") or []:
+            sid = re.sub(r"[^a-z0-9_-]", "-", (sk.get("id") or "").lower()).strip("-")[:48]
+            if sid:
+                keep.add(sid)
+        for r in rows("SELECT id FROM skills WHERE source='local' AND origin_host=?", (host,)):
+            if r["id"] not in keep:
+                run("DELETE FROM skills WHERE id=?", (r["id"],))
+                run("DELETE FROM agent_skills WHERE skill=?", (r["id"],))
+                changed += 1
     if changed:
         bump()
     return {"ok": True}
