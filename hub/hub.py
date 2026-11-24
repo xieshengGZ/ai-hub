@@ -481,6 +481,11 @@ def artifact_add(d):
     if msg is None and d.get("job"):
         j = one("SELECT agent_msg FROM jobs WHERE id=?", (d["job"],))
         msg = (j or {}).get("agent_msg")
+    if d.get("latest"):
+        m = one("SELECT id FROM messages WHERE agent=? AND role='agent' ORDER BY id DESC LIMIT 1",
+                (d.get("agent") or "",))
+        if m:
+            msg = m["id"]
     run("""INSERT INTO files(id,name,size,mime,agent,kind,path,ts,msg,stored)
            VALUES(?,?,?,?,?,?,?,?,?,?)""",
         (fid, d.get("name", "file"), int(d.get("size") or 0), d.get("mime") or "",

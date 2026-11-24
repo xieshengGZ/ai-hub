@@ -62,6 +62,33 @@ def http(path, data=None, headers=None, raw=False, timeout=60):
     return out if raw else json.loads(out.decode() or "{}")
 
 
+SEND_SH = r"""#!/usr/bin/env bash
+# 把本机文件发给用户：./aihub-send.sh <文件路径>
+set -euo pipefail
+f="${1:?用法: ./aihub-send.sh <文件路径>}"
+[ -f "$f" ] || { echo "没有这个文件: $f"; exit 1; }
+name=$(basename "$f")
+size=$(wc -c <"$f" | tr -d ' ')
+mime=$(file -b --mime-type "$f" 2>/dev/null || echo application/octet-stream)
+body=$(python3 - "$name" "$size" "$f" "$mime" <<'PYEOF'
+import json, os, sys
+name, size, path, mime = sys.argv[1:5]
+print(json.dumps({"agent": os.environ.get("AIHUB_AGENT", ""), "name": name,
+                  "size": int(size), "path": path, "mime": mime, "latest": True},
+                 ensure_ascii=False))
+PYEOF
+)
+resp=$(curl -fsS -X POST "$AIHUB_HUB/api/daemon/artifact" -H "X-Daemon: $AIHUB_TOKEN" \
+        -H 'Content-Type: application/json' --data "$body")
+fid=$(printf '%s' "$resp" | sed -E 's/.*"id" *: *"([0-9a-f]+)".*/\1/')
+[ -n "$fid" ] || { echo "上传失败: $resp"; exit 1; }
+curl -fsS -X POST "$AIHUB_HUB/api/daemon/upload" -H "X-Daemon: $AIHUB_TOKEN" \
+     -H "X-File-Id: $fid" --data-binary @"$f" >/dev/null
+printf '%s/%s\n' "$(cd "$(dirname "$f")" && pwd)" "$name" >> "$(dirname "$0")/.aihub-sent" 2>/dev/null || true
+echo "已发送给用户：$name（$size 字节）"
+"""
+
+
 class Acp:
     def __init__(self, agent):
         self.agent, self.p, self.sid = agent, None, None
@@ -78,9 +105,20 @@ class Acp:
         """只写 AGENTS.md 的人格；技能由共享库链接提供，kimi 用 --skills-dir 只认那个目录。"""
         cwd = self.agent["cwd"]
         os.makedirs(cwd, exist_ok=True)
-        lines = ["# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", ""))]
+        lines = ["# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", "")),
+                 "\n## 给用户发文件\n\n需要把文件交给用户时，在本目录执行：\n\n"
+                 "    ./aihub-send.sh <文件路径>\n\n"
+                 "它会把文件上传到中枢并挂在你这条回复下面，用户能直接下载。\n"
+                 "不要让用户自己拖拽或手动上传。\n"]
         with open(os.path.join(cwd, "AGENTS.md"), "w", encoding="utf-8") as f:
             f.write("".join(lines))
+        send_sh = os.path.join(cwd, "aihub-send.sh")
+        try:
+            with open(send_sh, "w", encoding="utf-8", newline="\n") as f:
+                f.write(SEND_SH)
+            os.chmod(send_sh, 0o755)
+        except OSError as e:
+            sys.stderr.write("write aihub-send.sh failed: %r\n" % e)
 
     def ensure(self):
         self.materialize_skills()
@@ -97,7 +135,10 @@ class Acp:
             kw["startupinfo"] = si
         sk_dir = os.path.join(self.agent["cwd"], "skills")
         os.makedirs(sk_dir, exist_ok=True)
+        env = dict(os.environ)
+        env.update({"AIHUB_HUB": HUB, "AIHUB_TOKEN": TOKEN, "AIHUB_AGENT": self.agent.get("id", "")})
         self.p = subprocess.Popen(kimi_argv() + ["--skills-dir", sk_dir, "acp"], cwd=self.agent["cwd"],
+                                  env=env,
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, bufsize=1,
                                   encoding="utf-8", errors="replace", **kw)
@@ -295,7 +336,13 @@ def fetch_file(fid, name, cwd):
 
 def scan_artifacts(cwd, since):
     skip = {".git", "node_modules", "__pycache__", ".kimi", ".kimi-code", ".aihub-inbox"}
-    skip_files = {"AGENTS.md", ".DS_Store"}
+    skip_files = {"AGENTS.md", ".DS_Store", "aihub-send.sh", ".aihub-sent"}
+    sent = set()
+    try:
+        with open(os.path.join(cwd, ".aihub-sent"), encoding="utf-8") as f:
+            sent = {ln.strip() for ln in f if ln.strip()}
+    except OSError:
+        pass
     out = []
     for root, dirs, files in os.walk(cwd):
         dirs[:] = [d for d in dirs if d not in skip]
@@ -305,7 +352,7 @@ def scan_artifacts(cwd, since):
                 st = os.stat(p)
             except OSError:
                 continue
-            if fn in skip_files:
+            if fn in skip_files or p in sent:
                 continue
             if st.st_mtime >= since and 0 < st.st_size <= 40 * 1024 * 1024:
                 out.append((p, st.st_size, st.st_mtime))
