@@ -4,7 +4,7 @@
 向 Hub 长轮询领任务；为每个 agent 拉起一个 `kimi acp` 子进程；流式回传；本地记账；
 心跳；产出扫描与上传。不保存任何模型密钥。
 """
-import json, mimetypes, os, queue, shutil, subprocess, sys, threading, time, urllib.request
+import hashlib, json, mimetypes, os, queue, shutil, subprocess, sys, threading, time, urllib.request
 
 CONF = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), encoding="utf-8"))
 HUB = CONF["hub"].rstrip("/")
@@ -13,9 +13,27 @@ NAME = CONF.get("name") or "未命名主机"
 LOG_DIR = os.path.expanduser(CONF.get("log_dir", "~/aihub/logs"))
 os.makedirs(LOG_DIR, exist_ok=True)
 
+# pythonw（Windows 计划任务常用）没有控制台，stdout/stderr 是 None，
+# 任何 print / sys.stderr.write 都会直接抛异常，所以先兜住。
+if sys.stderr is None or sys.stdout is None:
+    _p = os.path.join(LOG_DIR, "daemon.log")
+    _f = open(_p, "a", buffering=1, encoding="utf-8", errors="replace")
+    if sys.stderr is None:
+        sys.stderr = _f
+    if sys.stdout is None:
+        sys.stdout = _f
+
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
 KIMI_CONF = (CONF.get("kimi") or "").strip()
+
+
+def resolve_cwd(agent):
+    """cwd 留空就用本机的 ~/aihub/agents/<id>（Windows / Linux 都对）。"""
+    c = (agent.get("cwd") or "").strip()
+    if not c:
+        c = "~/aihub/agents/%s" % (agent.get("id") or "agent")
+    return os.path.abspath(os.path.expanduser(c))
 
 
 def kimi_argv():
@@ -50,7 +68,8 @@ class Acp:
         self.pending, self.notify = {}, queue.Queue()
         self.last_used = time.time()
         self.skills_sig = ""
-        cwd = agent["cwd"]
+        cwd = resolve_cwd(agent)
+        agent["cwd"] = cwd
         os.makedirs(cwd, exist_ok=True)
 
     def materialize_skills(self):
@@ -86,10 +105,17 @@ class Acp:
         if self.p and self.p.poll() is None and self.sid:
             return
         sys.stderr.write("[acp] spawn kimi acp\n"); sys.stderr.flush()
+        kw = {}
+        if os.name == "nt":
+            # 父进程无控制台时会为控制台子进程新建一个窗口，这里禁掉
+            kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+            si = subprocess.STARTUPINFO()
+            si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            kw["startupinfo"] = si
         self.p = subprocess.Popen(kimi_argv() + ["acp"], cwd=self.agent["cwd"],
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, bufsize=1,
-                                  encoding="utf-8", errors="replace")
+                                  encoding="utf-8", errors="replace", **kw)
         threading.Thread(target=self._reader, daemon=True).start()
         sys.stderr.write("[acp] initialize\n"); sys.stderr.flush()
         r = self.call("initialize", {"protocolVersion": 1,
@@ -303,12 +329,26 @@ def scan_artifacts(cwd, since):
 
 
 def run_job(job, agent, files):
+    try:
+        return _run_job(job, agent, files)
+    except Exception as e:
+        import traceback
+        sys.stderr.write("job crashed: %r\n%s\n" % (e, traceback.format_exc()))
+        try:
+            http("/api/daemon/event", {"job": job.get("id"), "kind": "error",
+                                       "error": ("daemon error: %s" % e)[:300]}, timeout=15)
+        except Exception:
+            pass
+
+
+def _run_job(job, agent, files):
     jid, cwd, started = job["id"], agent["cwd"], time.time()
     sys.stderr.write("[job] start %s agent=%s cwd=%s\n" % (jid, agent["id"], cwd)); sys.stderr.flush()
     try:
         http("/api/daemon/event", {"job": jid, "kind": "start"}, timeout=15)
     except Exception as e:
         sys.stderr.write("start ack failed: %r\n" % e)
+    cwd = resolve_cwd(agent)
     os.makedirs(cwd, exist_ok=True)
     text = job["text"]
     refs = []
@@ -420,6 +460,82 @@ def post_usage():
             sys.stderr.write("usage post failed: %r\n" % e)
 
 
+_LAST_SKILL_SCAN = [0.0]
+
+
+def scan_local_skills():
+    """把本机 ~/.kimi-code/skills 和各 agent 工作目录 skills/ 下的技能报给中枢。5 分钟一次。"""
+    if time.time() - _LAST_SKILL_SCAN[0] < 300:
+        return None
+    _LAST_SKILL_SCAN[0] = time.time()
+
+    def parse(path):
+        try:
+            txt = open(path, encoding="utf-8", errors="replace").read()
+        except OSError:
+            return None
+        sid = os.path.basename(os.path.dirname(path))
+        name, summary, when = sid, "", ""
+        for line in txt.splitlines()[:30]:
+            t = line.strip()
+            if t.startswith("name:") and len(t) > 5:
+                name = t[5:].strip()
+            elif t.startswith("description:"):
+                summary = t[12:].strip()
+            elif t.startswith("whenToUse:"):
+                when = t[10:].strip()
+        return {"id": sid, "name": name, "summary": summary, "when_to_use": when,
+                "body": txt[:20000]}
+
+    roots = [(os.path.join(os.path.expanduser("~"), ".kimi-code", "skills"), "user")]
+    with LOCK:
+        cwds = dict(WHERES)
+    for aid, cwd in cwds.items():
+        if cwd:
+            roots.append((os.path.join(cwd, "skills"), aid))
+    out = {}
+    for root, scope in roots:
+        if not os.path.isdir(root):
+            continue
+        for d in os.listdir(root):
+            p = os.path.join(root, d, "SKILL.md")
+            if not os.path.isfile(p):
+                continue
+            sk = parse(p)
+            if sk:
+                sk["scope"] = scope
+                out[sk["id"]] = sk
+    return list(out.values())
+
+
+def self_update():
+    """从 Hub 拉最新 daemon.py：校验、热替换、原地重启。有任务在跑就等下一轮。"""
+    with LOCK:
+        if ACTIVE:
+            return
+    try:
+        v = http("/api/daemon/version", timeout=15)
+        cur = hashlib.sha256(open(os.path.abspath(__file__), "rb").read()).hexdigest()
+        if v.get("sha256") == cur:
+            return
+        data = http("/api/daemon/source", raw=True, timeout=60)
+        new = os.path.abspath(__file__) + ".new"
+        with open(new, "wb") as f:
+            f.write(data)
+        r = subprocess.run([sys.executable, "-m", "py_compile", new], capture_output=True)
+        if r.returncode != 0:
+            sys.stderr.write("self-update: new file does not compile, skip\n")
+            os.remove(new)
+            return
+        shutil.copy2(os.path.abspath(__file__), os.path.abspath(__file__) + ".bak")
+        os.replace(new, os.path.abspath(__file__))
+        sys.stderr.write("self-update: applied %s, restarting\n" % (v.get("sha256") or "")[:12])
+        sys.stderr.flush()
+        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+    except Exception as e:
+        sys.stderr.write("self-update failed: %r\n" % e)
+
+
 def heartbeat():
     with LOCK:
         ids = set(KNOWN) | set(PROCS)
@@ -429,8 +545,12 @@ def heartbeat():
             alive = bool(p and p.p and p.p.poll() is None)
             state = "busy" if aid in ACTIVE else ("on" if alive else "off")
             agents.append({"id": aid, "state": state})
+    payload = {"agents": agents, "host": NAME}
+    sk = scan_local_skills()
+    if sk is not None:
+        payload["skills"] = sk
     try:
-        http("/api/daemon/hb", {"agents": agents, "host": NAME}, timeout=15)
+        http("/api/daemon/hb", payload, timeout=15)
     except Exception as e:
         sys.stderr.write("hb failed: %r\n" % e)
 
@@ -494,6 +614,7 @@ def main():
     threading.Thread(target=refresh_agents, daemon=True).start()
     last_hb = 0
     last_usage = 0
+    last_upd = 0
     while not STOP.is_set():
         try:
             r = http("/api/daemon/poll?wait=20", timeout=40)
@@ -507,6 +628,9 @@ def main():
         if time.time() - last_hb > 20:
             heartbeat()
             last_hb = time.time()
+        if time.time() - last_upd > 600:
+            last_upd = time.time()
+            threading.Thread(target=self_update, daemon=True).start()
         if time.time() - last_usage > 3600:
             threading.Thread(target=post_usage, daemon=True).start()
             last_usage = time.time()
@@ -514,3 +638,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

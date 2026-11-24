@@ -15,6 +15,9 @@ DB = os.path.join(DATA, "aihub.db")
 FILES = os.path.join(DATA, "files")
 INBOX = os.path.join(DATA, "inbox")           # 附件暂存：inbox/<agent>/<YYYYMMDD>/
 UPLOAD_LOG = os.path.join(INBOX, "uploads.jsonl")
+MON = os.path.join(DATA, "monitor")
+MON_TOKEN = CONF.get("monitor_token") or ""
+os.makedirs(MON, exist_ok=True)
 STATIC = os.path.join(ROOT, "static")
 _here = os.path.dirname(os.path.abspath(__file__))
 DAEMON_SRC = os.path.join(os.path.dirname(_here), "daemon", "daemon.py")
@@ -33,6 +36,71 @@ def bump():
     with REV_COND:
         REV[0] += 1
         REV_COND.notify_all()
+
+PUSH_SH = r"""#!/usr/bin/env bash
+# 监控推送：把当天 JSON 推到中枢。只用出站 HTTPS，不在本机开任何端口。
+# 安装：curl -fsSL "<中枢>/hub/api/monitor/push.sh?t=<token>" | bash -s -- <node> install
+set -euo pipefail
+NODE="${1:?node}"
+MODE="${2:-push}"
+DAY="${3:-$(TZ=Asia/Shanghai date +%F)}"
+HUB="${HUB:-https://nykj.store/hub}"
+HUB_IP="${HUB_IP:-39.108.175.43}"     # 免 DNS：直接按 IP 连，证书仍按域名校验
+TOK="__TOKEN__"
+DIR="${MONITOR_DIR:-$HOME/monitor}"
+SELF="$HOME/aihub-monitor/push.sh"
+
+if [ "$MODE" = "install" ]; then
+  mkdir -p "$(dirname "$SELF")"
+  curl -fsSL --resolve "nykj.store:443:$HUB_IP" "$HUB/api/monitor/push.sh?t=$TOK" -o "$SELF"
+  chmod +x "$SELF"
+  ( crontab -l 2>/dev/null | grep -v 'aihub-monitor/push.sh' || true
+    echo "30 6 * * * MONITOR_DIR=$DIR $SELF $NODE push >> $HOME/aihub-monitor/push.log 2>&1"
+    echo "@reboot sleep 120 && MONITOR_DIR=$DIR $SELF $NODE push >> $HOME/aihub-monitor/push.log 2>&1" ) | crontab -
+  echo "已安装：$SELF"
+  echo "计划：每天 06:30 推当天，开机 2 分钟后补一次"
+  MODE=push
+fi
+
+cd "$DIR" 2>/dev/null || { echo "没有目录 $DIR"; exit 1; }
+EXPORT=""
+for c in "$DIR/export_daily.sh" "$DIR/export/export_daily.sh"; do
+  [ -x "$c" ] && EXPORT="$c" && break
+done
+[ -n "$EXPORT" ] || { echo "找不到 export_daily.sh（$DIR 或 $DIR/export）"; exit 1; }
+"$EXPORT" "$DAY" >/dev/null || { echo "导出失败"; exit 1; }
+f=""
+for cand in "$DIR/export/${NODE}-${DAY}.json" "$DIR/export/${NODE}-$(echo "$DAY" | tr -d -).json"; do
+  [ -f "$cand" ] && f="$cand" && break
+done
+[ -n "$f" ] || { echo "没找到导出文件（export/${NODE}-${DAY}.json）"; exit 1; }
+gzip -9c "$f" | curl -fsS --resolve "nykj.store:443:$HUB_IP" -X POST "$HUB/api/monitor/ingest" \
+  -H "X-Monitor-Token: $TOK" -H "X-Node: $NODE" -H "X-Date: $DAY" \
+  -H "Content-Type: application/gzip" --data-binary @-
+echo
+"""
+
+
+SEED = [
+    {
+        "id": "main", "name": "主 agent", "host": "中枢机", "monogram": "主", "sort": 1,
+        "cwd": "/home/ubuntu/aihub/agents/main",
+        "prompt": "你是这台机器上的调度助理，用户的默认入口。回答简洁、先给结论。"
+                  "涉及别的机器或长任务时，先说清楚你准备怎么做，再动手。不知道就直说，不要编。",
+    },
+    {
+        "id": "ops", "name": "值班", "host": "中枢机", "monogram": "值", "sort": 2,
+        "cwd": "/home/ubuntu/aihub/agents/ops",
+        "prompt": "你负责值班运维：看日志、查服务状态、排查异常。回答要带证据（命令输出、时间点），"
+                  "不要凭印象下结论。",
+    },
+    {
+        "id": "write", "name": "写作", "host": "中枢机", "monogram": "写", "sort": 3,
+        "cwd": "/home/ubuntu/aihub/agents/write",
+        "prompt": "你负责中文文档写作与润色：先问清对象与目的，再出稿；用书面语，避免空话。",
+    },
+]
+
 
 def db():
     conn = sqlite3.connect(DB, timeout=15, check_same_thread=False)
@@ -108,38 +176,23 @@ def init():
                 c.execute("ALTER TABLE jobs ADD COLUMN %s REAL" % col)
             except Exception:
                 pass
-
-
-def _secret():
-    s = (CONF.get("secret") or "").strip()
-    if s:
-        return s
-    path = os.path.join(DATA, "secret")
-    if os.path.exists(path):
-        return open(path, encoding="utf-8").read().strip()
-    import secrets as _s
-    s = _s.token_hex(32)
-    os.makedirs(DATA, exist_ok=True)
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(s)
-    try:
-        os.chmod(path, 0o600)
-    except OSError:
-        pass
-    return s
-
-
-SECRET = _secret()
+        # 主机由 Daemon 心跳注册；这里不再预置"中枢机"（Hub 自己不跑 Daemon）
+        try:
+            c.execute("UPDATE agents SET managed_by='main' WHERE id IN ('ops','write','doc') AND managed_by IS NULL")
+        except Exception:
+            pass
 
 
 def cookie_value():
-    return hmac.new(SECRET.encode(), b"aihub-session", hashlib.sha256).hexdigest()
+    return hmac.new(CONF["secret"].encode(), b"aihub-session", hashlib.sha256).hexdigest()
 
 
 def daemon_ok(handler):
     got = handler.headers.get("X-Daemon") or ""
     if not got:
         return False
+    if CONF.get("token") and hmac.compare_digest(got, CONF["token"]):
+        return True
     try:
         for h in rows("SELECT token FROM hosts WHERE token IS NOT NULL"):
             if h["token"] and hmac.compare_digest(got, h["token"]):
@@ -153,12 +206,18 @@ def host_by_token(handler_or_tok):
     tok = handler_or_tok.headers.get("X-Daemon") if hasattr(handler_or_tok, "headers") else handler_or_tok
     if not tok:
         return None
+    if CONF.get("token") and hmac.compare_digest(tok, CONF["token"]):
+        return CONF.get("legacy_host", "腾讯云-Daemon")
     try:
         for h in rows("SELECT name, token FROM hosts WHERE token IS NOT NULL"):
             if h["token"] and hmac.compare_digest(tok, h["token"]):
                 return h["name"]
     except Exception:
         pass
+    return None
+    for h in rows("SELECT name,token FROM hosts WHERE token IS NOT NULL"):
+        if h["token"] and hmac.compare_digest(tok, h["token"]):
+            return h["name"]
     return None
 
 
@@ -365,6 +424,32 @@ def daemon_hb(d):
             (d["host"], now()))
     for a in d.get("agents", []):
         run("UPDATE agents SET status=?, seen=? WHERE id=?", (a.get("state", "on"), now(), a.get("id")))
+    # 本机磁盘上的技能（~/.kimi-code/skills 与各 agent 的 skills/）同步进中枢
+    changed = 0
+    for sk in d.get("skills") or []:
+        sid = re.sub(r"[^a-z0-9_-]", "-", (sk.get("id") or "").lower()).strip("-")[:48]
+        if not sid:
+            continue
+        run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created)
+               VALUES(?,?,?,?,?,'1',?)
+               ON CONFLICT(id) DO UPDATE SET name=excluded.name, summary=excluded.summary,
+                                             when_to_use=excluded.when_to_use, body=excluded.body""",
+            (sid, (sk.get("name") or sid)[:80], (sk.get("summary") or "")[:300],
+             (sk.get("when_to_use") or "")[:300], sk.get("body") or "", now()))
+        scope = sk.get("scope") or ""
+        if scope == "user":
+            targets = [r["id"] for r in rows(
+                "SELECT id FROM agents WHERE host=? AND deleted=0", (d.get("host") or "",))]
+        elif scope:
+            targets = [scope]
+        else:
+            targets = []
+        for aid in targets:
+            run("""INSERT INTO agent_skills(agent,skill,enabled) VALUES(?,?,1)
+                   ON CONFLICT(agent,skill) DO NOTHING""", (aid, sid))
+        changed += 1
+    if changed:
+        bump()
     return {"ok": True}
 
 
@@ -613,6 +698,31 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed():
                     return
                 return self._json(artifacts_list(q.get("agent", [""])[0]))
+            if p == "/api/monitor/list":
+                if not self._authed():
+                    return
+                out = []
+                for node in os.listdir(MON):
+                    for f in os.listdir(os.path.join(MON, node)):
+                        if f.endswith(".json.gz"):
+                            out.append({"node": node, "file": f,
+                                        "size": os.path.getsize(os.path.join(MON, node, f))})
+                return self._json({"files": sorted(out, key=lambda x: x["file"])})
+            if p == "/api/monitor/get":
+                if not self._authed():
+                    return
+                node = re.sub(r"[^a-z0-9_-]", "", q.get("node", [""])[0])
+                fn = re.sub(r"[^A-Za-z0-9._-]", "", q.get("file", [""])[0])
+                path = os.path.join(MON, node, fn)
+                if not os.path.isfile(path):
+                    raise Api(404, "没有这个文件")
+                data = open(path, "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/gzip")
+                self.send_header("Content-Length", str(len(data)))
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if p == "/api/skills":
                 if not self._authed():
                     return
@@ -645,10 +755,40 @@ class Handler(BaseHTTPRequestHandler):
                     "SELECT id,name,cwd,prompt,model,always_on,managed_by FROM agents "
                     "WHERE deleted=0 AND host=? ORDER BY sort,id", (mine,)),
                     "ops": rows("SELECT id,agent,op,path FROM daemon_ops WHERE done=0 ORDER BY id")})
+            if p == "/api/daemon/version":
+                if not daemon_ok(self):
+                    return self._json({"error": "forbidden"}, 403)
+                import hashlib as _h
+                data = open(DAEMON_SRC, "rb").read()
+                return self._json({"sha256": _h.sha256(data).hexdigest(), "size": len(data)})
+            if p == "/api/daemon/source":
+                if not daemon_ok(self):
+                    return self._json({"error": "forbidden"}, 403)
+                data = open(DAEMON_SRC, "rb").read()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/x-python; charset=utf-8")
+                self.send_header("Content-Length", str(len(data)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(data)
+                return
             if p == "/api/daemon/poll":
                 if not daemon_ok(self):
                     return self._json({"error": "forbidden"}, 403)
                 return self._json(daemon_poll(float(q.get("wait", ["20"])[0]), host_by_token(self) or ""))
+            if p == "/api/monitor/push.sh":
+                q2 = parse_qs(u.query)
+                tok = q2.get("t", [""])[0]
+                if not MON_TOKEN or not hmac.compare_digest(tok, MON_TOKEN):
+                    return self._json({"error": "token 不对"}, 403)
+                body = PUSH_SH.replace("__TOKEN__", MON_TOKEN).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Cache-Control", "no-store")
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if p in ("/api/host/daemon.py", "/api/host/install.ps1"):
                 q2 = parse_qs(u.query)
                 name, tok = q2.get("name", [""])[0], q2.get("t", [""])[0]
@@ -773,6 +913,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json(artifact_add(self._body()))
             if p == "/api/daemon/upload":
                 return self._json(self._artifact_upload())
+            if p == "/api/monitor/ingest":
+                if not MON_TOKEN or not hmac.compare_digest(self.headers.get("X-Monitor-Token", ""), MON_TOKEN):
+                    raise Api(403, "monitor token 不对")
+                node = re.sub(r"[^a-z0-9_-]", "", (self.headers.get("X-Node") or "").lower())
+                day = re.sub(r"[^0-9-]", "", self.headers.get("X-Date") or "")
+                if not node or not day:
+                    raise Api(400, "缺 X-Node / X-Date")
+                n = int(self.headers.get("Content-Length") or 0)
+                raw = self.rfile.read(n) if n else b""
+                try:
+                    data = __import__("gzip").decompress(raw)
+                except Exception:
+                    raise Api(400, "不是 gzip")
+                try:
+                    obj = json.loads(data)
+                except Exception:
+                    raise Api(400, "JSON 解不开")
+                d = os.path.join(MON, node)
+                os.makedirs(d, exist_ok=True)
+                fn = os.path.join(d, "%s-%s.json.gz" % (node, day.replace("-", "")))
+                with open(fn, "wb") as f:
+                    f.write(raw)
+                return self._json({"ok": True, "node": node, "day": day,
+                                   "bytes": len(raw), "daily": (obj.get("daily") or [{}])[0].get("requests")})
             if not self._authed():
                 return
             if p == "/api/send":
@@ -853,7 +1017,7 @@ class Handler(BaseHTTPRequestHandler):
                     raise Api(400, "id 只能是 2–24 位小写字母、数字、下划线或短横线")
                 if one("SELECT id FROM agents WHERE id=?", (aid,)):
                     raise Api(409, "这个 id 已经存在")
-                cwd = (d.get("cwd") or "").strip() or ("/home/ubuntu/aihub/agents/" + aid)
+                cwd = (d.get("cwd") or "").strip()   # 留空由 Daemon 按本机规则落盘
                 sort = (one("SELECT COALESCE(MAX(sort),0)+1 n FROM agents") or {}).get("n", 9)
                 run("""INSERT INTO agents(id,name,host,monogram,cwd,model,prompt,sort,always_on)
                        VALUES(?,?,?,?,?,?,?,?,?)""",
@@ -984,17 +1148,9 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "服务器错误"}, 500)
 
     # ---- 文件 ----
-    def _hub_url(self):
-        """安装脚本里要写的 Hub 地址：优先 config 的 public_url，否则按请求头推导。"""
-        if CONF.get("public_url"):
-            return CONF["public_url"].rstrip("/")
-        host = self.headers.get("X-Forwarded-Host") or self.headers.get("Host") or "localhost"
-        proto = self.headers.get("X-Forwarded-Proto") or "http"
-        return "%s://%s/hub" % (proto, host.split(",")[0].strip())
-
     def _install_ps1(self, host, token):
         """Windows 版安装脚本：纯 ASCII，避免 PowerShell 5.1 的中文编码坑。"""
-        hub = self._hub_url()
+        hub = CONF.get("public_url", "https://nykj.store/hub")
         return r"""$ErrorActionPreference = "Stop"
 $HostName = "%(host)s"
 $Hub = "%(hub)s"
@@ -1026,6 +1182,8 @@ $kimi = Get-Command kimi -ErrorAction SilentlyContinue
 if (-not $kimi) { Write-Host "!! 'kimi' not found in PATH. Daemon will register but agents cannot run until kimi is on PATH." }
 
 $tr = '"' + $pyw + '" "' + (Join-Path $Dir "daemon.py") + '"'
+schtasks /End /TN "AIHubDaemon" 2>$null | Out-Null
+Start-Sleep -Seconds 1
 schtasks /Create /SC ONLOGON /TN "AIHubDaemon" /TR $tr /F | Out-Null
 schtasks /Run /TN "AIHubDaemon" | Out-Null
 Start-Sleep -Seconds 3
@@ -1037,7 +1195,6 @@ Write-Host "    config: $Dir\config.json    logs: $LogDir"
         import base64 as b64
         src = open(DAEMON_SRC, "rb").read()
         payload = b64.b64encode(src).decode()
-        hub_base = self._hub_url()
         sh = """#!/usr/bin/env bash
 set -e
 HOST_NAME="%(host)s"
@@ -1075,7 +1232,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now aihub-daemon
 sleep 2
 systemctl is-active aihub-daemon && echo "==> 已上线：$HOST_NAME" || echo "!! 启动失败，看 journalctl -u aihub-daemon"
-""" % {"host": host, "hub": hub_base, "token": token, "payload": payload}
+""" % {"host": host, "hub": CONF.get("public_url", "https://nykj.store/hub"), "token": token, "payload": payload}
         body = sh.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")
