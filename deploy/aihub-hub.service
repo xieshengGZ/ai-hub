@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Hub · web hub
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aihub
+WorkingDirectory=/opt/ai-hub/hub
+ExecStart=/usr/bin/python3 /opt/ai-hub/hub/hub.py
+Restart=always
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

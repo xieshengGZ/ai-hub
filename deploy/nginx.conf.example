@@ -1,0 +1,12 @@
+# 把 /hub/ 反代到本机的 hub（默认 127.0.0.1:8791）
+location /hub/ {
+    proxy_pass http://127.0.0.1:8791/;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header X-Forwarded-Host $host;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_set_header X-Real-IP $remote_addr;
+    client_max_body_size 120m;      # 附件上限
+    proxy_buffering off;            # 流式/SSE 必须关
+    proxy_read_timeout 300s;        # daemon 长轮询
+}

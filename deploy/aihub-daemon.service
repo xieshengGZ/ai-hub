@@ -1,0 +1,17 @@
+[Unit]
+Description=AI Hub · daemon (runs kimi agents on this machine)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=aihub
+WorkingDirectory=/opt/ai-hub/daemon
+Environment=HOME=/home/aihub
+Environment=PATH=/home/aihub/.kimi-code/bin:/usr/local/bin:/usr/bin:/bin
+ExecStart=/usr/bin/python3 /opt/ai-hub/daemon/daemon.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

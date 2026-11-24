@@ -1,0 +1,7 @@
+{
+  "hub": "https://your-hub.example.com/hub",
+  "token": "<host token, created in the web UI>",
+  "name": "my-machine",
+  "log_dir": "~/aihub/logs",
+  "kimi": ""
+}
