@@ -311,8 +311,15 @@ function attHtml(files){
   const rest = files.filter(f => f.kind !== 'image');
   return '<div class="atts">' +
     imgs.map(f => `<img class="att-img" src="${f.url}" alt="${esc(f.name)}" onclick="viewImg('${f.url}')" onload="if(window.STICK){const c=document.getElementById('chat');if(c)c.scrollTop=c.scrollHeight}">`).join('') +
-    rest.map(f => `<button class="att-file" onclick="openPreview('${f.id}','${escAttr(f.name)}','${escAttr(f.mime || '')}')">` +
-      `<span>${f.kind === 'video' ? '▶' : '📄'} ${esc(f.name)}</span><i>${fmtSize(f.size)}</i></button>`).join('') +
+    rest.map(f => {
+      const isPdf = /\.pdf$/i.test(f.name) || (f.mime || '') === 'application/pdf';
+      if(isPdf){
+        return `<a class="att-file" href="${f.url}" target="_blank" rel="noopener">` +
+               `<span>📄 ${esc(f.name)}</span><i>${fmtSize(f.size)}</i></a>`;
+      }
+      return `<button class="att-file" onclick="openPreview('${f.id}','${escAttr(f.name)}','${escAttr(f.mime || '')}')">` +
+             `<span>${f.kind === 'video' ? '▶' : '📄'} ${esc(f.name)}</span><i>${fmtSize(f.size)}</i></button>`;
+    }).join('') +
     '</div>';
 }
 const TEXT_EXT = /\.(txt|md|markdown|log|json|jsonl|csv|tsv|ya?ml|ini|conf|cfg|env|xml|html?|css|js|ts|jsx|tsx|py|sh|bash|sql|go|rs|java|c|h|cpp|hpp|toml|gitignore)$/i;
@@ -403,7 +410,7 @@ function draw(m){
       el.className = 'msg me'; el.dataset.id = m.id;
       box.appendChild(el);
     }
-    el.innerHTML = esc(m.text) + attHtml(m.files);
+    el.innerHTML = mdInline(m.text) + attHtml(m.files);
   }else{
     let el = box.querySelector(`[data-id="${m.id}"]`);
     if(!el){
@@ -447,15 +454,29 @@ function renderJobLine(){
 }
 
 /* 极简 markdown：代码块、行内代码、加粗 */
+function linkify(t){
+  return t.replace(/(https?:\/\/[^\s<>"']+)/g, (m) => {
+    let url = m, tail = '';
+    const mm = /[.,;:!?)\]}>。，、；：！？）】》」』”’…]+$/.exec(url);
+    if(mm){ tail = mm[0]; url = url.slice(0, -tail.length); }
+    return '<a href="' + url + '" target="_blank" rel="noopener">' + url + '</a>' + tail;
+  });
+}
 function mdInline(s){
   let t = esc(s);
-  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g, '<img src="$2" alt="$1" loading="lazy">');
+  const keep = [];
+  const stash = (html) => { keep.push(html); return '\u0000' + (keep.length - 1) + '\u0000'; };
+  /* 先保住代码与显式链接，避免被后续的自动链接和强调规则二次处理 */
+  t = t.replace(/`([^`]+)`/g, (m, c) => stash('<code>' + c + '</code>'));
+  t = t.replace(/!\[([^\]]*)\]\((https?:\/\/[^\s)]+)\)/g,
+                (m, alt, u) => stash('<img src="' + u + '" alt="' + alt + '" loading="lazy">'));
   t = t.replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
-                '<a href="$2" target="_blank" rel="noopener">$1</a>');
-  t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
+                (m, txt, u) => stash('<a href="' + u + '" target="_blank" rel="noopener">' + txt + '</a>'));
   t = t.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
   t = t.replace(/(^|[^*])\*([^*\n]+)\*/g, '$1<i>$2</i>');
   t = t.replace(/~~([^~]+)~~/g, '<s>$1</s>');
+  t = linkify(t);
+  t = t.replace(/\u0000(\d+)\u0000/g, (m, i) => keep[Number(i)]);
   return t;
 }
 function md(src){
