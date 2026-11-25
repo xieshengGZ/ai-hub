@@ -210,14 +210,14 @@ async function openAgent(id){
 }
 
 let WIN = 50, HAS_MORE = false, FIRST_ID = 0;
-async function pull(reset){
+async function pull(reset, keepAnchor){
   if(!CUR) return;
   let d;
   if(reset){
     d = await api(`api/msg?agent=${encodeURIComponent(CUR.id)}&limit=${WIN}`);
     const box = $('chat');
-    const keepTop = firstVisibleId() || FIRST_ID;
-    window.STICK = false;
+    const keepTop = keepAnchor ? (firstVisibleId() || FIRST_ID) : 0;
+    window.STICK = !keepAnchor;
     box.innerHTML = '';
     RENDERED.clear();
     LAST_ID = 0; FIRST_ID = 0;
@@ -227,8 +227,11 @@ async function pull(reset){
     if(keepTop){
       const el = box.querySelector(`[data-id="${keepTop}"]`);
       if(el) box.scrollTop = el.offsetTop - 8;
+      window.STICK = nearBottom();
+    }else{
+      box.scrollTop = box.scrollHeight;
+      window.STICK = true;
     }
-    window.STICK = nearBottom();
   }else{
     const since = Math.max(0, LAST_ID - 1);
     d = await api(`api/msg?agent=${encodeURIComponent(CUR.id)}&after=${since}`);
@@ -277,6 +280,11 @@ function leaveChat(){
   if(DESK()){ placeholder(); return; }
   show('s-list'); boot();
 }
+window.addEventListener('hashchange', () => {
+  const h = (location.hash || '').replace('#', '');
+  if(h && AGENTS.some(a => a.id === h) && (!CUR || CUR.id !== h)){ openAgent(h); return; }
+  if(!h && CUR){ back(); }
+});
 window.addEventListener('popstate', () => {
   if(SHEET_CLOSING){ SHEET_CLOSING = false; return; }
   if(document.querySelector('.sheet.on')){ closeSheet(true); return; }
@@ -510,7 +518,7 @@ function renderLoadMore(){
 async function loadEarlier(){
   if(!CUR || !HAS_MORE) return;
   WIN = Math.min(400, WIN * 2);
-  await pull(true);
+  await pull(true, true);
 }
 
 function renderBrief(){
