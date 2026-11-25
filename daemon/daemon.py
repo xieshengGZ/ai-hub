@@ -606,12 +606,25 @@ def unlink_skill(cwd, sid):
     return "ok"
 
 
+def _tombstones():
+    try:
+        with open(os.path.join(STORE, ".deleted"), encoding="utf-8") as f:
+            return {ln.strip() for ln in f if ln.strip()}
+    except OSError:
+        return set()
+
+
 def delete_store_skill(sid):
     sid = "".join(ch for ch in (sid or "") if ch not in "/\\\x00")
     p = os.path.join(STORE, sid)
     if not os.path.isdir(p):
         return "库里没有这个技能"
     shutil.rmtree(p, ignore_errors=True)
+    try:
+        with open(os.path.join(STORE, ".deleted"), "a", encoding="utf-8") as f:
+            f.write(sid + "\n")
+    except OSError:
+        pass
     return "ok"
 
 
@@ -668,7 +681,7 @@ def adopt_agents_skills():
             if not os.path.isfile(os.path.join(src, "SKILL.md")):
                 continue
             tgt = os.path.join(STORE, d)
-            if os.path.exists(tgt):
+            if os.path.exists(tgt) or d in _tombstones():
                 continue
             try:
                 shutil.copytree(src, tgt)
@@ -677,14 +690,23 @@ def adopt_agents_skills():
                 sys.stderr.write("adopt .agents %s failed: %r\n" % (d, e))
 
 
-def migrate_user_skills():
-    """把 Kimi 用户级技能复制一份进共享库（不动原文件，个人 CLI 不受影响）。"""
+_LAST_USER_SYNC = [0.0]
+
+
+def migrate_user_skills(force=False):
+    """把 Kimi 用户级技能复制一份进共享库（不动原文件，个人 CLI 不受影响）。
+    启动时跑一次，之后每 2 分钟补一次，新装的技能也能自动进库。"""
+    if not force and time.time() - _LAST_USER_SYNC[0] < 120:
+        return
+    _LAST_USER_SYNC[0] = time.time()
     src = os.path.join(os.path.expanduser("~"), ".kimi-code", "skills")
     if not os.path.isdir(src):
         return
     for d in os.listdir(src):
         s_dir = os.path.join(src, d)
         t_dir = os.path.join(STORE, d)
+        if d in _tombstones():
+            continue
         if os.path.isfile(os.path.join(s_dir, "SKILL.md")) and not os.path.exists(t_dir):
             try:
                 shutil.copytree(s_dir, t_dir)
@@ -768,6 +790,7 @@ def refresh_agents():
                         sys.stderr.write("常驻实例拉起: %s\n" % a["id"])
             migrate_agent_skill_dirs()
             adopt_agents_skills()
+            migrate_user_skills()
             for op in d.get("ops", []):
                 try:
                     a = PROCS.pop(op["agent"], None)
@@ -810,7 +833,7 @@ def refresh_agents():
 
 
 def main():
-    migrate_user_skills()
+    migrate_user_skills(force=True)
     print("daemon -> %s" % HUB, flush=True)
     try:
         http("/api/daemon/recover", {}, timeout=15)
