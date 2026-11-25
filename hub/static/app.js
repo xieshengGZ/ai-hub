@@ -258,6 +258,8 @@ function leaveChat(){
   show('s-list'); boot();
 }
 window.addEventListener('popstate', () => {
+  if(SHEET_CLOSING){ SHEET_CLOSING = false; return; }
+  if(document.querySelector('.sheet.on')){ closeSheet(true); return; }
   if(PV_CLOSING){ PV_CLOSING = false; return; }
   if(document.getElementById('pv')){ closePreview(true); return; }
   if(SCREEN === 's-chat' || SCREEN === 's-new'){
@@ -1225,12 +1227,14 @@ function toast(msg){
   document.body.appendChild(t); setTimeout(()=>t.remove(), 2200);
 }
 
+let SHEET_CLOSING = false;
 function openSheet(k){
   closeSheet();
   $('mask').classList.add('on');
   const el = $('sheet-' + k);
   if(el) el.classList.add('on');
   syncTabIndex(SCREEN);
+  try{ history.pushState({sheet: k}, '', location.pathname + location.hash); }catch(e){}
   if(k === 'art') loadArtifacts();
   if(k === 't') loadTasks();
   if(k === 'arch') loadArchived();
@@ -1241,10 +1245,14 @@ function openSheet(k){
   if(k === 'a') loadStaged();
   if(k === 'm'){ renderJobLine(); paintAlways(); paintAgentInfo(); loadArtifacts(); }
 }
-function closeSheet(){
+function closeSheet(fromHistory){
   $('mask').classList.remove('on');
   ['m','o','a','art','t','team','arch','g','s','host','sk'].forEach(k => { const el = $('sheet-'+k); if(el) el.classList.remove('on'); });
   syncTabIndex(SCREEN);
+  if(!fromHistory && history.state && history.state.sheet){
+    SHEET_CLOSING = true;
+    try{ history.back(); }catch(e){ SHEET_CLOSING = false; }
+  }
 }
 
 /* ---------- 输入框 ---------- */
