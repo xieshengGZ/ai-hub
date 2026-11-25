@@ -326,3 +326,6 @@ body.pv-open > .phone{visibility:hidden}   /* 预览盖住时后面整页不可�
   background:rgba(6,20,18,.72);color:#9dffe0;font-size:15px;letter-spacing:.06em;
   border:2px dashed rgba(63,255,205,.6);border-radius:0}
 #dropHint.on{display:flex}
+
+.loadmore{display:block;width:100%;margin:2px 0 6px;padding:9px;border:1px dashed var(--line);border-radius:10px;
+  background:#FAFBF9;color:var(--sub);font:inherit;font-size:12.5px;cursor:pointer}

@@ -288,19 +288,43 @@ def bootstrap():
     return {"agents": out, "now": now()}
 
 
-def session_get(agent, after=0):
+def session_get(agent, after=0, before=0, limit=0):
     ag = one("SELECT * FROM agents WHERE id=? AND deleted=0", (agent,))
     if not ag:
         raise Api(404, "没有这个 agent")
-    msgs = rows("""SELECT id,role,text,ts,status,job,mode FROM messages
-                   WHERE agent=? AND id>? ORDER BY id LIMIT 400""", (agent, after))
-    for m in msgs:
-        fs = rows("""SELECT id,name,size,mime,kind AS dir FROM files
-                     WHERE agent=? AND msg=? ORDER BY ts""", (agent, m["id"]))
-        for f in fs:
+    lim = max(1, min(int(limit or 50), 400))
+    has_more = False
+    if after:
+        msgs = rows("""SELECT id,role,text,ts,status,job,mode FROM messages
+                       WHERE agent=? AND id>? ORDER BY id LIMIT 400""", (agent, after))
+    elif before:
+        msgs = rows("""SELECT id,role,text,ts,status,job,mode FROM messages
+                       WHERE agent=? AND id<? ORDER BY id DESC LIMIT ?""", (agent, before, lim))
+        msgs.reverse()
+        if msgs:
+            has_more = bool(one("SELECT 1 FROM messages WHERE agent=? AND id<? LIMIT 1",
+                                (agent, msgs[0]["id"])))
+    else:
+        msgs = rows("""SELECT id,role,text,ts,status,job,mode FROM messages
+                       WHERE agent=? ORDER BY id DESC LIMIT ?""", (agent, lim))
+        msgs.reverse()
+        if msgs:
+            has_more = bool(one("SELECT 1 FROM messages WHERE agent=? AND id<? LIMIT 1",
+                                (agent, msgs[0]["id"])))
+    if msgs:
+        ids = [m["id"] for m in msgs]
+        ph = ",".join("?" * len(ids))
+        fmap = {}
+        for f in rows("""SELECT id,name,size,mime,kind AS dir,msg FROM files
+                         WHERE agent=? AND msg IN (%s) ORDER BY ts""" % ph, [agent] + ids):
             f["kind"] = file_kind(f["mime"], f["name"])
             f["url"] = "api/file?id=" + f["id"]
-        m["files"] = fs
+            fmap.setdefault(f["msg"], []).append(f)
+        for m in msgs:
+            m["files"] = fmap.get(m["id"], [])
+    else:
+        for m in msgs:
+            m["files"] = []
     job = one("""SELECT id,status,error,started,ended,agent_msg FROM jobs
                  WHERE agent=? ORDER BY started DESC LIMIT 1""", (agent,))
     run("UPDATE agents SET seen=? WHERE id=?", (now(), agent))
@@ -311,7 +335,7 @@ def session_get(agent, after=0):
                       "always_on": bool(ag["always_on"]),
                       "mode": (one("SELECT mode FROM messages WHERE agent=? ORDER BY id DESC LIMIT 1",
                                    (agent,)) or {}).get("mode", "full")},
-            "messages": msgs, "job": job}
+            "messages": msgs, "job": job, "has_more": has_more}
 
 
 def session_send(agent, text, mode="full"):
@@ -598,7 +622,11 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/msg":
                 if not self._authed():
                     return
-                return self._json(session_get(q.get("agent", [""])[0], int(q.get("after", ["0"])[0] or 0)))
+                return self._json(session_get(
+                    q.get("agent", [""])[0],
+                    int(q.get("after", ["0"])[0] or 0),
+                    int(q.get("before", ["0"])[0] or 0),
+                    int(q.get("limit", ["0"])[0] or 0)))
             if p == "/api/host/create":
                 d = self._body()
                 name = (d.get("name") or "").strip()

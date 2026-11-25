@@ -198,7 +198,7 @@ async function openAgent(id){
     return;
   }
   CUR = known;
-  LAST_ID = 0; RENDERED.clear(); JOB = null; window.STICK = true;
+  LAST_ID = 0; RENDERED.clear(); JOB = null; window.STICK = true; WIN = 50; HAS_MORE = false; FIRST_ID = 0;
   $('chatName').textContent = CUR.name;
   $('chatSub').textContent = '加载中…';
   $('chat').innerHTML = '';
@@ -209,11 +209,31 @@ async function openAgent(id){
   try{ history.pushState({chat: id}, '', '#' + id); }catch(e){}
 }
 
+let WIN = 50, HAS_MORE = false, FIRST_ID = 0;
 async function pull(reset){
   if(!CUR) return;
-  const since = reset ? 0 : Math.max(0, LAST_ID - 1);
-  const d = await api(`api/msg?agent=${encodeURIComponent(CUR.id)}&after=${since}`);
-  (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); draw(m); });
+  let d;
+  if(reset){
+    d = await api(`api/msg?agent=${encodeURIComponent(CUR.id)}&limit=${WIN}`);
+    const box = $('chat');
+    const keepTop = firstVisibleId() || FIRST_ID;
+    window.STICK = false;
+    box.innerHTML = '';
+    RENDERED.clear();
+    LAST_ID = 0; FIRST_ID = 0;
+    (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); if(!FIRST_ID) FIRST_ID = m.id; draw(m); });
+    HAS_MORE = !!d.has_more;
+    renderLoadMore();
+    if(keepTop){
+      const el = box.querySelector(`[data-id="${keepTop}"]`);
+      if(el) box.scrollTop = el.offsetTop - 8;
+    }
+    window.STICK = nearBottom();
+  }else{
+    const since = Math.max(0, LAST_ID - 1);
+    d = await api(`api/msg?agent=${encodeURIComponent(CUR.id)}&after=${since}`);
+    (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); if(!FIRST_ID) FIRST_ID = m.id; draw(m); });
+  }
   JOB = d.job;
   renderBrief();
   const st = d.agent.state === 'busy' ? '正在执行任务'
@@ -464,6 +484,33 @@ function draw(m){
   }
   renderBrief();
   if(window.STICK) box.scrollTop = box.scrollHeight;
+}
+
+function firstVisibleId(){
+  const box = $('chat');
+  if(!box) return 0;
+  const top = box.scrollTop;
+  for(const el of box.querySelectorAll('.msg')){
+    if(el.offsetTop + el.offsetHeight > top + 4) return Number(el.dataset.id) || 0;
+  }
+  return 0;
+}
+function renderLoadMore(){
+  const box = $('chat');
+  if(!box) return;
+  const old = box.querySelector('.loadmore');
+  if(old) old.remove();
+  if(!HAS_MORE) return;
+  const b = document.createElement('button');
+  b.className = 'loadmore';
+  b.textContent = '加载更早的消息（还有更多）';
+  b.onclick = loadEarlier;
+  box.insertBefore(b, box.firstChild);
+}
+async function loadEarlier(){
+  if(!CUR || !HAS_MORE) return;
+  WIN = Math.min(400, WIN * 2);
+  await pull(true);
 }
 
 function renderBrief(){
