@@ -266,6 +266,25 @@ window.addEventListener('popstate', () => {
   }
 });
 
+/* 抽屉（文件列表、技能、主机…）：左滑关闭 */
+(function(){
+  let el = null, sx = 0, sy = 0;
+  document.addEventListener('touchstart', (e) => {
+    const t = e.touches && e.touches[0];
+    const sh = e.target && e.target.closest ? e.target.closest('.sheet.on') : null;
+    if(!t || !sh){ el = null; return; }
+    el = sh; sx = t.clientX; sy = t.clientY;
+  }, {passive:true});
+  document.addEventListener('touchend', (e) => {
+    if(!el) return;
+    const sh = el; el = null;
+    const t = (e.changedTouches && e.changedTouches[0]) || null;
+    if(!t) return;
+    const dx = t.clientX - sx, dy = t.clientY - sy;
+    if(dx < -60 && Math.abs(dx) > Math.abs(dy) * 1.5) closeSheet();
+  }, {passive:true});
+})();
+
 /* 手势返回：聊天页从左边缘右滑；图片灯箱 / 文件预览打开时，任意位置左右滑都能退出 */
 (function(){
   let sx = 0, sy = 0, tracking = false, decided = false, overlay = false;
