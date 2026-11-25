@@ -204,12 +204,43 @@ async function openAgent(id){
   $('chat').innerHTML = '';
   show('s-chat');
   document.body.classList.remove('login-mode');
-  try{ await pull(true); }catch(e){ $('chatSub').textContent = '加载失败：' + e.message; }
+  const cached = CHAT_CACHE.get(id);
+  if(cached && cached.msgs.size){
+    /* 先秒开：用内存里的缓存渲染，再去服务端补增量 */
+    WIN = cached.win || 50; HAS_MORE = !!cached.hasMore;
+    FIRST_ID = cached.firstId; LAST_ID = cached.lastId;
+    cacheSorted(cached).forEach(m => draw(m));
+    renderLoadMore();
+    $('chat').scrollTop = $('chat').scrollHeight;
+    window.STICK = true;
+    try{ await pull(false); }catch(e){ $('chatSub').textContent = '同步失败：' + e.message; }
+  }else{
+    try{ await pull(true); }catch(e){ $('chatSub').textContent = '加载失败：' + e.message; }
+  }
   loadSkillCache(); loadFileCache();
   try{ history.pushState({chat: id}, '', '#' + id); }catch(e){}
 }
 
 let WIN = 50, HAS_MORE = false, FIRST_ID = 0;
+const CHAT_CACHE = new Map();   // agent -> {msgs: Map(id->msg), lastId, firstId, hasMore, win}
+function cacheOf(id){
+  let c = CHAT_CACHE.get(id);
+  if(!c){ c = { msgs: new Map(), lastId: 0, firstId: 0, hasMore: false, win: 50 }; CHAT_CACHE.set(id, c); }
+  return c;
+}
+function cachePut(c, m){
+  c.msgs.set(m.id, m);
+  if(m.id > c.lastId) c.lastId = m.id;
+  if(!c.firstId || m.id < c.firstId) c.firstId = m.id;
+}
+function cacheSorted(c){ return [...c.msgs.values()].sort((a, b) => a.id - b.id); }
+function cacheRebuild(agent, msgs, hasMore, win){
+  const c = cacheOf(agent);
+  c.msgs = new Map(); c.lastId = 0; c.firstId = 0;
+  (msgs || []).forEach(m => cachePut(c, m));
+  c.hasMore = !!hasMore; c.win = win;
+  return c;
+}
 async function pull(reset, keepAnchor){
   if(!CUR) return;
   let d;
@@ -223,6 +254,7 @@ async function pull(reset, keepAnchor){
     LAST_ID = 0; FIRST_ID = 0;
     (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); if(!FIRST_ID) FIRST_ID = m.id; draw(m); });
     HAS_MORE = !!d.has_more;
+    const cc = cacheRebuild(CUR.id, d.messages || [], HAS_MORE, WIN);
     renderLoadMore();
     if(keepTop){
       const el = box.querySelector(`[data-id="${keepTop}"]`);
@@ -235,7 +267,8 @@ async function pull(reset, keepAnchor){
   }else{
     const since = Math.max(0, LAST_ID - 1);
     d = await api(`api/msg?agent=${encodeURIComponent(CUR.id)}&after=${since}`);
-    (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); if(!FIRST_ID) FIRST_ID = m.id; draw(m); });
+    const cc2 = cacheOf(CUR.id);
+    (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); if(!FIRST_ID) FIRST_ID = m.id; draw(m); cachePut(cc2, m); });
   }
   JOB = d.job;
   renderBrief();
