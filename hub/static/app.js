@@ -707,7 +707,7 @@ function paintMode(){
 /* ---------- 模型配置 ---------- */
 let MODELS = [];
 function modelName(id){
-  if(!id) return '本机默认';
+  if(!id) return '未指定';
   const m = MODELS.find(x => x.id === id);
   return m ? (m.name || m.model_id) : id;
 }

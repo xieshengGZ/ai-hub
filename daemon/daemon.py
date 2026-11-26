@@ -434,6 +434,8 @@ def _run_job(job, agent, files):
         sys.stderr.write("start ack failed: %r\n" % e)
     cwd = resolve_cwd(agent)
     os.makedirs(cwd, exist_ok=True)
+    if not (agent.get("model_cfg") or {}).get("base_url"):
+        raise RuntimeError("这个 agent 没有指定模型：请在中枢的会话里选一个模型后再发消息")
     text = job["text"]
     # 支持 "/技能id 任务描述" 的调用形式：翻译成明确的使用技能指令
     m = re.match(r"^/([a-z0-9_-]+)(?:\s+([\s\S]*))?$", (text or "").strip())
@@ -804,6 +806,42 @@ def self_update():
         sys.stderr.write("self-update failed: %r\n" % e)
 
 
+def local_default_model():
+    """读本机 ~/.kimi-code/config.toml 的默认模型，供中枢一次性接管老 agent。"""
+    try:
+        txt = open(os.path.expanduser("~/.kimi-code/config.toml"), encoding="utf-8").read()
+    except OSError:
+        return None
+    alias = ""
+    for line in txt.splitlines():
+        if line.strip().startswith("default_model"):
+            alias = line.split("=", 1)[1].strip().strip('"')
+            break
+    if not alias:
+        return None
+    mm = re.search(r"\[models\.%s\](.*?)(?=\n\[|\Z)" % re.escape(alias), txt, re.S)
+    if not mm:
+        return None
+    body = mm.group(1)
+    prov = re.search(r'provider\s*=\s*"([^"]+)"', body)
+    mid = re.search(r'model\s*=\s*"([^"]+)"', body)
+    mctx = re.search(r'max_context_size\s*=\s*(\d+)', body)
+    if not prov or not mid:
+        return None
+    pm = re.search(r"\[providers\.%s\](.*?)(?=\n\[|\Z)" % re.escape(prov.group(1)), txt, re.S)
+    if not pm:
+        return None
+
+    def get(k):
+        x = re.search(r'%s\s*=\s*"([^"]*)"' % k, pm.group(1))
+        return x.group(1) if x else ""
+
+    return {"name": "%s 默认（%s）" % (NAME, alias), "base_url": get("base_url"),
+            "api_key": get("api_key"), "model_id": mid.group(1),
+            "kind": get("type") or "openai",
+            "max_context": int(mctx.group(1)) if mctx else 131072}
+
+
 def heartbeat():
     with LOCK:
         ids = set(KNOWN) | set(PROCS)
@@ -848,6 +886,15 @@ def refresh_agents():
                     a = PROCS.pop(op["agent"], None)
                     if a:
                         a.kill()
+                    if op["op"] == "report_model":
+                        dm = local_default_model()
+                        if dm:
+                            dm["host"] = NAME
+                            try:
+                                http("/api/daemon/model_report", dm, timeout=20)
+                                sys.stderr.write("reported default model: %s\n" % dm.get("model_id"))
+                            except Exception as e:
+                                sys.stderr.write("report model failed: %r\n" % e)
                     if op["op"] in ("skill_install", "skill_uninstall", "skill_delete"):
                         sid = op.get("path") or ""
                         aid = op.get("agent") or ""

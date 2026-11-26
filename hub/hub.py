@@ -1035,6 +1035,30 @@ class Handler(BaseHTTPRequestHandler):
                 return self._json({"ok": True})
             if p == "/api/daemon/hb":
                 return self._json(daemon_hb(self._body()))
+            if p == "/api/daemon/model_report":
+                if not daemon_ok(self):
+                    return self._json({"error": "forbidden"}, 403)
+                d = self._body()
+                host_ = d.get("host") or (host_by_token(self) or "")
+                if not host_ or not d.get("base_url") or not d.get("api_key"):
+                    raise Api(400, "上报内容不完整")
+                base_slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9_-]", "-", host_.lower())).strip("-")
+                slug = (base_slug or "host") + "-default"
+                run("""INSERT INTO models(id,name,base_url,model_id,api_key,kind,max_context,created)
+                       VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(id) DO UPDATE SET name=excluded.name, base_url=excluded.base_url,
+                         model_id=excluded.model_id, api_key=excluded.api_key, kind=excluded.kind,
+                         max_context=excluded.max_context""",
+                    (slug, (d.get("name") or slug)[:80], d.get("base_url"), d.get("model_id"),
+                     d.get("api_key"), d.get("kind") or "openai",
+                     int(d.get("max_context") or 131072), now()))
+                for a in rows("""SELECT id FROM agents WHERE host=? AND deleted=0
+                                 AND (model IS NULL OR model='')""", (host_,)):
+                    run("UPDATE agents SET model=? WHERE id=?", (slug, a["id"]))
+                    run("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
+                        (a["id"], "restart", "", now(), host_))
+                bump()
+                return self._json({"ok": True, "model": slug})
             if p == "/api/daemon/artifact":
                 return self._json(artifact_add(self._body()))
             if p == "/api/daemon/upload":
@@ -1178,7 +1202,9 @@ class Handler(BaseHTTPRequestHandler):
                 ag_ = one("SELECT id,host FROM agents WHERE id=? AND deleted=0", (aid_,))
                 if not ag_:
                     raise Api(404, "没有这个 agent")
-                if mid_ and not one("SELECT id FROM models WHERE id=?", (mid_,)):
+                if not mid_:
+                    raise Api(400, "要选一个模型")
+                if not one("SELECT id FROM models WHERE id=?", (mid_,)):
                     raise Api(404, "没有这个模型")
                 if one("SELECT id FROM jobs WHERE agent=? AND status IN('queued','running')", (aid_,)):
                     raise Api(409, "这个 agent 正在跑任务，等它跑完再切换模型")
@@ -1200,7 +1226,9 @@ class Handler(BaseHTTPRequestHandler):
                 cwd = (d.get("cwd") or "").strip()   # 留空由 Daemon 按本机规则落盘
                 sort = (one("SELECT COALESCE(MAX(sort),0)+1 n FROM agents") or {}).get("n", 9)
                 mid_ = (d.get("model") or "").strip()
-                if mid_ and not one("SELECT id FROM models WHERE id=?", (mid_,)):
+                if not mid_:
+                    raise Api(400, "新建 agent 要选一个模型（先去「模型配置」里加）")
+                if not one("SELECT id FROM models WHERE id=?", (mid_,)):
                     raise Api(400, "没有这个模型")
                 run("""INSERT INTO agents(id,name,host,monogram,cwd,model,prompt,sort,always_on)
                        VALUES(?,?,?,?,?,?,?,?,?)""",
