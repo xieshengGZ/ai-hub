@@ -1311,9 +1311,11 @@ function backToList(){
 async function createAgent(){
   const name = $('naName').value.trim();
   if(!name){ toast('先填名字'); return; }
+  const model = $('naModel').value;
+  if(!model){ toast('先到「模型配置」里加一个模型'); return; }
   try{
     const d = await api('api/agent/create', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({name, host: $('naHost').value.trim() || '中枢机',
+      body: JSON.stringify({name, model, host: $('naHost').value.trim() || '中枢机',
         cwd: $('naCwd').value.trim(), prompt: $('naPrompt').value.trim(),
         always_on: $('naOn').checked})});
     toast('已创建');
