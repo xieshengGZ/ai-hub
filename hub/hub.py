@@ -1045,6 +1045,8 @@ class Handler(BaseHTTPRequestHandler):
                 except OSError:
                     v = ""
                 return self._json({"v": v})
+            if p == "/api/authinfo":
+                return self._json({"totp": auth_get("totp_enabled") == "1"})
             if p == "/api/health":
                 return self._json({"ok": True, "ts": now()})
             self._json({"error": "not found"}, 404)

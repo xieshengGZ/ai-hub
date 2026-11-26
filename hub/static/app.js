@@ -86,6 +86,14 @@ function nxBootRun(){
   tick();
 }
 
+async function loginPrefetch(){
+  try{
+    const r = await fetch('api/authinfo', {credentials:'same-origin'});
+    const d = await r.json();
+    if(d && d.totp){ const w = $('otpWrap'); if(w) w.style.display = ''; }
+  }catch(e){}
+}
+
 async function login(){
   const pwd = $('pwd').value;
   const codeEl = $('otpCode');
@@ -1634,7 +1642,7 @@ function checkWebVer(){
   }).catch(() => {});
 }
 setTimeout(checkWebVer, 1500);
-paintMode(); bindInput(); boot(); startEvents();
+paintMode(); bindInput(); boot(); startEvents(); loginPrefetch();
 document.addEventListener('input', e => {
   if(e.target && e.target.id === 'qInput'){
     clearTimeout(Q_TIMER); Q_TIMER = setTimeout(doSearch, 300);
