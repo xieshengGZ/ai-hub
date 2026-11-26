@@ -4,7 +4,7 @@
 向 Hub 长轮询领任务；为每个 agent 拉起一个 `kimi acp` 子进程；流式回传；本地记账；
 心跳；产出扫描与上传。不保存任何模型密钥。
 """
-import hashlib, json, mimetypes, os, queue, re, shutil, socket, subprocess, sys, threading, time, urllib.parse, urllib.request
+import fnmatch, hashlib, json, mimetypes, os, queue, re, shutil, socket, subprocess, sys, threading, time, urllib.parse, urllib.request
 
 CONF = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), encoding="utf-8"))
 HUB = CONF["hub"].rstrip("/")
@@ -24,6 +24,8 @@ if sys.stderr is None or sys.stdout is None:
         sys.stderr = _f
     if sys.stdout is None:
         sys.stdout = _f
+
+VERSION = 2026112701   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
@@ -423,9 +425,41 @@ def fetch_file(fid, name, cwd):
     return os.path.relpath(dst, cwd)
 
 
+# 浏览器、编辑器这些工具会在工作目录里留一堆缓存，不能当产出传给用户
+SKIP_DIRS = {
+    ".git", "node_modules", "__pycache__", ".kimi", ".kimi-code", ".kimi-home",
+    ".aihub-inbox", ".cache", "temp", "tmp",
+    # Chromium 用户数据目录
+    "profile", "User Data", "Cache", "Cache_Data", "Code Cache", "GPUCache",
+    "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache", "ShaderCache",
+    "Network", "WebStorage", "Local Storage", "Session Storage", "Service Worker",
+    "IndexedDB", "databases", "blob_storage", "segmentation_platform",
+    "Crashpad", "Application Cache", "Media Cache", "component_crx_cache",
+    "extensions_crx_cache", "Safe Browsing", "optimization_guide_model_store",
+}
+SKIP_FILE_RE = re.compile(r"""^(
+    data_\d+ | f_\d{6,} | \..* |
+    Cookies.* | History.* | Favicons | QuotaManager | DIPS.* | ukm_db.* |
+    Preferences | Local\ State | CURRENT | CURRENT-.* | MANIFEST-.* |
+    .*\.(wal|lock|log|tmp|bak|index|ldb|sst)$
+)$""", re.X)
+
+
+def load_ignore(cwd):
+    """<cwd>/.aihub-ignore：每行一条 glob（相对路径），命中就不当产出。"""
+    pats = []
+    try:
+        with open(os.path.join(cwd, ".aihub-ignore"), encoding="utf-8") as f:
+            for ln in f:
+                ln = ln.strip()
+                if ln and not ln.startswith("#"):
+                    pats.append(ln)
+    except OSError:
+        pass
+    return pats
+
+
 def scan_artifacts(cwd, since):
-    skip = {".git", "node_modules", "__pycache__", ".kimi", ".kimi-code",
-            ".kimi-home", ".aihub-inbox"}
     skip_files = {"AGENTS.md", ".DS_Store", "aihub-send.sh", "aihub-send.cmd", ".aihub-sent"}
     sent = set()
     try:
@@ -433,19 +467,23 @@ def scan_artifacts(cwd, since):
             sent = {ln.strip() for ln in f if ln.strip()}
     except OSError:
         pass
+    ign = load_ignore(cwd)
     out = []
     for root, dirs, files in os.walk(cwd):
         # 所有点开头的目录（.kimi-home / .git / .aihub-inbox …）都不是产出
-        dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
+        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
         for fn in files:
-            if fn.startswith("."):
+            if fn in skip_files or SKIP_FILE_RE.match(fn):
                 continue
             p = os.path.join(root, fn)
+            rel = os.path.relpath(p, cwd).replace(os.sep, "/")
+            if any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(fn, pat) for pat in ign):
+                continue
             try:
                 st = os.stat(p)
             except OSError:
                 continue
-            if fn in skip_files or p in sent:
+            if p in sent:
                 continue
             if st.st_mtime >= since and 0 < st.st_size <= 40 * 1024 * 1024:
                 out.append((p, st.st_size, st.st_mtime))
@@ -850,6 +888,12 @@ def self_update():
             os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
             return
         data = http("/api/daemon/source", raw=True, timeout=60)
+        mv = re.search(rb"^VERSION = (\d+)", data, re.M)
+        remote_v = int(mv.group(1)) if mv else 0
+        if remote_v and remote_v <= VERSION:
+            sys.stderr.write("self-update: 中枢版本 %d 不比本地 %d 新，跳过\n" % (remote_v, VERSION))
+            sys.stderr.flush()
+            return
         new = os.path.abspath(__file__) + ".new"
         with open(new, "wb") as f:
             f.write(data)
