@@ -27,6 +27,7 @@ if sys.stderr is None or sys.stdout is None:
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
+RUNNING_JOBS = set()
 KIMI_CONF = (CONF.get("kimi") or "").strip()
 
 
@@ -462,10 +463,20 @@ def run_job(job, agent, files):
 def _run_job(job, agent, files):
     jid, cwd, started = job["id"], agent["cwd"], time.time()
     with LOCK:
+        if jid in RUNNING_JOBS:
+            sys.stderr.write("skip duplicate job: %s\n" % jid)
+            return
+        RUNNING_JOBS.add(jid)
         ACTIVE.add(agent["id"])
     sys.stderr.write("[job] start %s agent=%s cwd=%s\n" % (jid, agent["id"], cwd)); sys.stderr.flush()
     try:
-        http("/api/daemon/event", {"job": jid, "kind": "start"}, timeout=15)
+        ack = http("/api/daemon/event", {"job": jid, "kind": "start"}, timeout=15)
+        if isinstance(ack, dict) and ack.get("cancel"):
+            sys.stderr.write("server says cancel at start: %s\n" % jid)
+            with LOCK:
+                RUNNING_JOBS.discard(jid)
+                ACTIVE.discard(agent["id"])
+            return
     except Exception as e:
         sys.stderr.write("start ack failed: %r\n" % e)
     cwd = resolve_cwd(agent)
@@ -581,6 +592,7 @@ def _run_job(job, agent, files):
             sys.stderr.write("artifact failed: %r\n" % e)
 
     with LOCK:
+        RUNNING_JOBS.discard(jid)
         ACTIVE.discard(agent["id"])
     with open(os.path.join(LOG_DIR, "usage.jsonl"), "a", encoding="utf-8") as f:
         f.write(json.dumps({"ts": time.time(), "agent": agent["id"], "job": jid,

@@ -448,15 +448,22 @@ def daemon_poll(wait_s, host=""):
             WAIT.wait(timeout=1.0)
 
 
-def daemon_event(d):
+def daemon_event(d, host=""):
     jid = d.get("job")
     j = one("SELECT * FROM jobs WHERE id=?", (jid,))
     if not j:
         raise Api(404, "没有这个任务")
+    owner = j.get("daemon") or ""
+    # 同一个任务只允许一个 daemon 写；别的 daemon 再来就让它停
+    if owner and host and owner != host:
+        return {"cancel": True}
     if j["status"] == "canceled":
         return {"cancel": True}
     if d.get("kind") == "start":
-        run("UPDATE jobs SET status='running', started=? WHERE id=? AND status='queued'", (now(), jid))
+        if j["status"] == "running" and owner == host:
+            return {"cancel": True}
+        run("UPDATE jobs SET status='running', started=?, daemon=? WHERE id=? AND status IN('queued','running')",
+            (now(), host, jid))
         return {"cancel": False}
     if d.get("kind") == "chunk":
         txt = d.get("text") or ""
@@ -1016,7 +1023,7 @@ class Handler(BaseHTTPRequestHandler):
                     (d.get("agent"), d.get("day"), int(d.get("jobs") or 0), int(d.get("ms") or 0)))
                 return self._json({"ok": True})
             if p == "/api/daemon/event":
-                return self._json(daemon_event(self._body()))
+                return self._json(daemon_event(self._body(), host_by_token(self) or ""))
             if p == "/api/daemon/agents":
                 if not daemon_ok(self):
                     return self._json({"error": "forbidden"}, 403)
