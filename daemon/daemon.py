@@ -804,42 +804,6 @@ def self_update():
         sys.stderr.write("self-update failed: %r\n" % e)
 
 
-def local_default_model():
-    """读机器上 ~/.kimi-code/config.toml，返回默认模型的 provider 信息，供中枢导入。"""
-    try:
-        txt = open(os.path.expanduser("~/.kimi-code/config.toml"), encoding="utf-8").read()
-    except OSError:
-        return None
-    alias = ""
-    for line in txt.splitlines():
-        if line.strip().startswith("default_model"):
-            alias = line.split("=", 1)[1].strip().strip('"')
-            break
-    if not alias:
-        return None
-    import re as _re
-    mm = _re.search(r"\[models\.%s\](.*?)(?=\n\[|\Z)" % _re.escape(alias), txt, _re.S)
-    if not mm:
-        return None
-    model_body = mm.group(1)
-    prov = _re.search(r'provider\s*=\s*"([^"]+)"', model_body)
-    mid = _re.search(r'model\s*=\s*"([^"]+)"', model_body)
-    mctx = _re.search(r'max_context_size\s*=\s*(\d+)', model_body)
-    if not prov or not mid:
-        return None
-    pm = _re.search(r"\[providers\.%s\](.*?)(?=\n\[|\Z)" % _re.escape(prov.group(1)), txt, _re.S)
-    if not pm:
-        return None
-    pbody = pm.group(1)
-    def get(k):
-        x = _re.search(r'%s\s*=\s*"([^"]*)"' % k, pbody)
-        return x.group(1) if x else ""
-    return {"name": "%s 默认（%s）" % (NAME, alias), "alias": alias,
-            "base_url": get("base_url"), "api_key": get("api_key"),
-            "model_id": mid.group(1), "kind": get("type") or "openai",
-            "max_context": int(mctx.group(1)) if mctx else 131072}
-
-
 def heartbeat():
     with LOCK:
         ids = set(KNOWN) | set(PROCS)
@@ -850,8 +814,7 @@ def heartbeat():
             state = "busy" if aid in ACTIVE else ("on" if alive else "off")
             agents.append({"id": aid, "state": state})
     payload = {"agents": agents, "host": NAME,
-               "skill_store": skill_store(), "skill_installs": skill_installs(),
-               "default_model": local_default_model()}
+               "skill_store": skill_store(), "skill_installs": skill_installs()}
     try:
         http("/api/daemon/hb", payload, timeout=15)
     except Exception as e:
