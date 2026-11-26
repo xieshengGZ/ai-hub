@@ -130,6 +130,14 @@ def init():
           id TEXT PRIMARY KEY, name TEXT, size INTEGER, mime TEXT, agent TEXT,
           kind TEXT, path TEXT, ts REAL, msg INTEGER, stored TEXT);
         CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS sessions(
+          sid TEXT PRIMARY KEY, created REAL, last_seen REAL, expires REAL, ua TEXT);
+        CREATE TABLE IF NOT EXISTS auth(
+          k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS backup_codes(
+          code_hash TEXT PRIMARY KEY, used REAL);
+        CREATE TABLE IF NOT EXISTS login_attempts(
+          ip TEXT, ts REAL);
         CREATE TABLE IF NOT EXISTS models(
           id TEXT PRIMARY KEY, name TEXT, base_url TEXT, model_id TEXT, api_key TEXT,
           kind TEXT DEFAULT 'openai', max_context INTEGER DEFAULT 131072, created REAL DEFAULT 0);
@@ -218,6 +226,91 @@ def init():
             pass
 
 
+def _b32decode(sec):
+    import base64
+    pad = "=" * ((8 - len(sec) % 8) % 8)
+    return base64.b32decode(sec.upper() + pad)
+
+
+def totp_code(secret, step=None):
+    import struct
+    step = int(step if step is not None else time.time() // 30)
+    msg = struct.pack(">Q", step)
+    dig = hmac.new(_b32decode(secret), msg, hashlib.sha1).digest()
+    off = dig[-1] & 0x0F
+    val = struct.unpack(">I", dig[off:off + 4])[0] & 0x7FFFFFFF
+    return "%06d" % (val % 1000000)
+
+
+def totp_verify(secret, code):
+    if not secret or not re.fullmatch(r"\d{6}", (code or "").strip()):
+        return False
+    cur = int(time.time() // 30)
+    for d in (-1, 0, 1):
+        if hmac.compare_digest(totp_code(secret, cur + d), code.strip()):
+            return True
+    return False
+
+
+def auth_get(k, default=""):
+    r = one("SELECT v FROM auth WHERE k=?", (k,))
+    return r["v"] if r else default
+
+
+def auth_set(k, v):
+    run("INSERT INTO auth(k,v) VALUES(?,?) ON CONFLICT(k) DO UPDATE SET v=excluded.v", (k, v))
+
+
+def new_backup_codes(n=8):
+    codes = []
+    for _ in range(n):
+        c = "%s-%s" % (uuid.uuid4().hex[:4], uuid.uuid4().hex[:4])
+        codes.append(c)
+        run("INSERT OR REPLACE INTO backup_codes(code_hash,used) VALUES(?,0)",
+            (hashlib.sha256(c.encode()).hexdigest(),))
+    return codes
+
+
+def use_backup_code(code):
+    h = hashlib.sha256((code or "").strip().lower().encode()).hexdigest()
+    r = one("SELECT used FROM backup_codes WHERE code_hash=?", (h,))
+    if not r or r["used"]:
+        return False
+    run("UPDATE backup_codes SET used=? WHERE code_hash=?", (now(), h))
+    return True
+
+
+def session_new(ua=""):
+    sid = uuid.uuid4().hex + uuid.uuid4().hex
+    t = now()
+    run("INSERT INTO sessions(sid,created,last_seen,expires,ua) VALUES(?,?,?,?,?)",
+        (sid, t, t, t + 30 * 86400, (ua or "")[:200]))
+    return sid
+
+
+def session_ok(sid):
+    if not sid:
+        return False
+    r = one("SELECT expires FROM sessions WHERE sid=?", (sid,))
+    if not r:
+        return False
+    if r["expires"] < now():
+        run("DELETE FROM sessions WHERE sid=?", (sid,))
+        return False
+    run("UPDATE sessions SET last_seen=? WHERE sid=?", (now(), sid))
+    return True
+
+
+def login_locked(ip):
+    n = one("SELECT COUNT(*) n FROM login_attempts WHERE ip=? AND ts>?", (ip, now() - 600))["n"]
+    return n >= 10
+
+
+def login_fail(ip):
+    run("INSERT INTO login_attempts(ip,ts) VALUES(?,?)", (ip, now()))
+    run("DELETE FROM login_attempts WHERE ts<?", (now() - 3600,))
+
+
 def cookie_value():
     return hmac.new(CONF["secret"].encode(), b"aihub-session", hashlib.sha256).hexdigest()
 
@@ -259,7 +352,7 @@ def host_by_token(handler_or_tok):
 def check_cookie(handler):
     raw = handler.headers.get("Cookie", "")
     m = re.search(r"sid=([0-9a-f]{64})", raw)
-    return bool(m) and hmac.compare_digest(m.group(1), cookie_value())
+    return bool(m) and session_ok(m.group(1))
 
 
 def now():
@@ -823,6 +916,12 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if p == "/api/totp/state":
+                if not self._authed():
+                    return
+                return self._json({"enabled": auth_get("totp_enabled") == "1",
+                                   "backup_left": one(
+                                       "SELECT COUNT(*) n FROM backup_codes WHERE used=0")["n"]})
             if p == "/api/models":
                 if not self._authed():
                     return
@@ -961,23 +1060,82 @@ class Handler(BaseHTTPRequestHandler):
         try:
             if p == "/api/login":
                 d = self._body()
-                if hmac.compare_digest(d.get("password", ""), CONF["password"]):
-                    self.send_response(200)
-                    body = json.dumps({"ok": True}).encode()
-                    self.send_header("Content-Type", "application/json")
-                    self.send_header("Content-Length", str(len(body)))
-                    self.send_header("Set-Cookie",
-                                     "sid=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" % cookie_value())
-                    self.end_headers()
-                    self.wfile.write(body)
-                    return
-                return self._json({"error": "口令不对"}, 401)
+                ip = (self.headers.get("X-Real-IP") or self.client_address[0] or "")[:64]
+                if login_locked(ip):
+                    return self._json({"error": "尝试太频繁，10 分钟后再试"}, 429)
+                if not hmac.compare_digest(d.get("password", ""), CONF["password"]):
+                    login_fail(ip)
+                    return self._json({"error": "口令不对"}, 401)
+                totp_on = auth_get("totp_enabled") == "1"
+                if totp_on:
+                    secret = auth_get("totp_secret")
+                    code = d.get("code") or ""
+                    ok = totp_verify(secret, code)
+                    if not ok and code.strip():
+                        ok = use_backup_code(code)
+                    if not ok:
+                        login_fail(ip)
+                        return self._json({"error": "需要动态验证码", "need_totp": True}, 401)
+                sid = session_new(self.headers.get("User-Agent") or "")
+                self.send_response(200)
+                body = json.dumps({"ok": True, "totp": totp_on}).encode()
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.send_header("Set-Cookie",
+                                 "sid=%s; Path=/; HttpOnly; SameSite=Lax; Max-Age=2592000" % sid)
+                self.end_headers()
+                self.wfile.write(body)
+                return
             if p == "/api/logout":
+                raw = self.headers.get("Cookie", "")
+                m = re.search(r"sid=([0-9a-f]{64})", raw)
+                if m:
+                    run("DELETE FROM sessions WHERE sid=?", (m.group(1),))
                 self.send_response(200)
                 self.send_header("Set-Cookie", "sid=; Path=/; Max-Age=0")
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
+            if p == "/api/totp/setup":
+                if not self._authed():
+                    return
+                if auth_get("totp_enabled") == "1":
+                    raise Api(400, "两步验证已经开启")
+                import base64 as _b64, secrets as _sec, urllib.parse as _up
+                secret = _b64.b32encode(_sec.token_bytes(20)).decode().rstrip("=")
+                auth_set("totp_pending", secret)
+                label = _up.quote("AIHub:%s" % (_up.unquote(CONF.get("public_url") or "ai-hub")))
+                uri = ("otpauth://totp/%s?secret=%s&issuer=AIHub&period=30&digits=6"
+                       % (label, secret))
+                return self._json({"secret": secret, "uri": uri})
+            if p == "/api/totp/enable":
+                if not self._authed():
+                    return
+                d = self._body()
+                secret = auth_get("totp_pending")
+                if not secret:
+                    raise Api(400, "先调用 setup 生成密钥")
+                if not totp_verify(secret, d.get("code") or ""):
+                    raise Api(400, "验证码不对")
+                auth_set("totp_secret", secret)
+                auth_set("totp_enabled", "1")
+                auth_set("totp_pending", "")
+                run("DELETE FROM backup_codes")
+                codes = new_backup_codes(8)
+                bump()
+                return self._json({"ok": True, "backup_codes": codes})
+            if p == "/api/totp/disable":
+                if not self._authed():
+                    return
+                d = self._body()
+                if not hmac.compare_digest(d.get("password") or "", CONF["password"]):
+                    raise Api(401, "口令不对")
+                auth_set("totp_enabled", "")
+                auth_set("totp_secret", "")
+                auth_set("totp_pending", "")
+                run("DELETE FROM backup_codes")
+                bump()
+                return self._json({"ok": True})
             if not daemon_ok(self) and p.startswith("/api/daemon/"):
                 return self._json({"error": "forbidden"}, 403)
             if p == "/api/daemon/poll":

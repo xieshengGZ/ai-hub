@@ -88,17 +88,78 @@ function nxBootRun(){
 
 async function login(){
   const pwd = $('pwd').value;
+  const codeEl = $('otpCode');
+  const code = codeEl ? codeEl.value.trim() : '';
   $('loginErr').textContent = '';
   try{
     await api('api/login', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({password: pwd})});
+      body: JSON.stringify({password: pwd, code})});
     document.body.classList.remove('login-mode');
     boot();
   }catch(e){
+    if(e.message === '需要动态验证码'){
+      const w = $('otpWrap');
+      if(w){ w.style.display = ''; if(codeEl) codeEl.focus(); }
+      $('loginErr').textContent = code ? '动态码不对，请重试' : '请输入认证器上的 6 位动态码';
+      return;
+    }
     $('loginErr').textContent = e.message === '401' ? '口令不对，请重试' : e.message;
     const nx = document.querySelector('.nx');
     if(nx){ nx.classList.add('shake'); setTimeout(() => nx.classList.remove('shake'), 420); }
   }
+}
+
+/* ---------- 安全 / 两步验证 ---------- */
+async function loadSec(){
+  const box = $('secBody'); if(!box) return;
+  let st = {enabled:false, backup_left:0};
+  try{ st = await api('api/totp/state'); }catch(e){}
+  const lbl = $('secLabel'); if(lbl) lbl.textContent = st.enabled ? '已开启' : '未开启';
+  if(st.enabled){
+    box.innerHTML = `<div class="hint">两步验证已开启，备用码剩余 <b>${st.backup_left}</b> 个。</div>
+      <div style="padding:8px 16px;display:flex;flex-direction:column;gap:8px">
+        <input id="secPwd" type="password" class="mdin" placeholder="输入登录口令以关闭两步验证">
+        <button class="pick" onclick="disableTotp()">关闭两步验证</button>
+      </div>`;
+    return;
+  }
+  box.innerHTML = `<div style="padding:8px 16px"><button class="pick" style="width:100%" onclick="startTotp()">开启两步验证</button></div>
+    <div id="totpSetup"></div>`;
+}
+async function startTotp(){
+  try{
+    const d = await api('api/totp/setup', {method:'POST'});
+    const box = $('totpSetup');
+    box.innerHTML = `<div class="hint">1）把下面这串密钥加到认证器（Google Authenticator / 1Password 等）：</div>
+      <div style="padding:6px 16px"><code style="font-size:13px;word-break:break-all">${esc(d.secret)}</code></div>
+      <div class="hint" style="padding:2px 16px">也可以直接点这个链接（手机打开）：<br>
+        <span style="word-break:break-all;font-size:11px;color:#0F5B63">${esc(d.uri)}</span></div>
+      <div class="hint">2）输入认证器显示的 6 位动态码完成绑定：</div>
+      <div style="padding:6px 16px;display:flex;gap:8px">
+        <input id="totpCode" class="mdin" inputmode="numeric" maxlength="6" placeholder="6 位动态码">
+        <button class="pick" style="flex:none;padding:10px 16px" onclick="enableTotp()">确认开启</button>
+      </div>`;
+  }catch(e){ alert(e.message); }
+}
+async function enableTotp(){
+  try{
+    const d = await api('api/totp/enable', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({code: $('totpCode').value.trim()})});
+    const box = $('totpSetup');
+    box.innerHTML = `<div class="hint">已开启。下面这些<strong>备用码只显示这一次</strong>，请立刻保存（每张只能用一次）：</div>
+      <div style="padding:6px 16px;font-family:ui-monospace,monospace;font-size:13px;line-height:1.9">
+        ${(d.backup_codes || []).map(c => esc(c)).join('<br>')}
+      </div>
+      <div style="padding:8px 16px"><button class="pick" onclick="loadSec()">完成</button></div>`;
+    toast('两步验证已开启');
+  }catch(e){ alert(e.message); }
+}
+async function disableTotp(){
+  try{
+    await api('api/totp/disable', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({password: $('secPwd').value})});
+    toast('已关闭两步验证'); loadSec();
+  }catch(e){ alert(e.message); }
 }
 function logout(){ api('api/logout', {method:'POST'}).finally(()=>{ location.reload(); }); }
 
@@ -1427,6 +1488,7 @@ function openSheet(k){
   if(k === 'arch') loadArchived();
   if(k === 'host') loadHosts();
   if(k === 'sk') loadSkills();
+  if(k === 'sec') loadSec();
   if(k === 's'){ setTimeout(()=>$('qInput').focus(), 150); }
   if(k === 'team'){ loadTeam(); $('teamCount').textContent = (CUR && CUR.team) ? CUR.team + ' 个' : ''; }
   if(k === 'a') loadStaged();
