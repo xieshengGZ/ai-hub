@@ -122,26 +122,13 @@ class Acp:
             sys.stderr.write("write aihub-send.sh failed: %r\n" % e)
 
     def _ensure_model_home(self):
-        """按 agent 选的模型生成独立 KIMI_CODE_HOME，返回 (home, 额外启动参数)。"""
+        """选了中枢模型：写 <cwd>/.kimi-home 并用它；没选：沿用机器默认配置。"""
         cfg = self.agent.get("model_cfg") or None
-        sig = json.dumps(cfg, sort_keys=True, ensure_ascii=False) if cfg else ""
-        if sig != self.model_sig:
-            self.model_sig = sig
-            if self.p and self.p.poll() is None:
-                sys.stderr.write("模型配置变化，重启实例: %s\n" % self.agent["id"])
-                self.kill()
         if not cfg:
             return None, []
         home = os.path.join(self.agent["cwd"], ".kimi-home")
         os.makedirs(home, exist_ok=True)
-        src_home = os.path.expanduser("~/.kimi-code")
-        for fn in ("device_id", "region"):
-            s_p, d_p = os.path.join(src_home, fn), os.path.join(home, fn)
-            if os.path.isfile(s_p) and not os.path.exists(d_p):
-                try:
-                    shutil.copy2(s_p, d_p)
-                except OSError:
-                    pass
+        path = os.path.join(home, "config.toml")
 
         def esc(v):
             return str(v or "").replace("\\", "\\\\").replace('"', '\\"')
@@ -158,9 +145,8 @@ class Acp:
                 'max_context_size = %d\n'
                 'capabilities = [ "tool_use" ]\n') % (
             esc(cfg.get("kind") or "openai"), esc(cfg.get("base_url")),
-            esc(cfg.get("api_key")), esc(cfg.get("model_id")), esc(cfg.get("name") or "hub"),
-            int(cfg.get("max_context") or 131072))
-        path = os.path.join(home, "config.toml")
+            esc(cfg.get("api_key")), esc(cfg.get("model_id")),
+            esc(cfg.get("name") or "hub"), int(cfg.get("max_context") or 131072))
         try:
             old_txt = open(path, encoding="utf-8").read()
         except OSError:
@@ -172,6 +158,14 @@ class Acp:
                 os.chmod(path, 0o600)
             except OSError:
                 pass
+        src_home = os.path.expanduser("~/.kimi-code")
+        for fn in ("device_id", "region"):
+            s_p, d_p = os.path.join(src_home, fn), os.path.join(home, fn)
+            if os.path.isfile(s_p) and not os.path.exists(d_p):
+                try:
+                    shutil.copy2(s_p, d_p)
+                except OSError:
+                    pass
         return home, ["--model", "hub"]
 
     def ensure(self):
@@ -810,6 +804,42 @@ def self_update():
         sys.stderr.write("self-update failed: %r\n" % e)
 
 
+def local_default_model():
+    """读机器上 ~/.kimi-code/config.toml，返回默认模型的 provider 信息，供中枢导入。"""
+    try:
+        txt = open(os.path.expanduser("~/.kimi-code/config.toml"), encoding="utf-8").read()
+    except OSError:
+        return None
+    alias = ""
+    for line in txt.splitlines():
+        if line.strip().startswith("default_model"):
+            alias = line.split("=", 1)[1].strip().strip('"')
+            break
+    if not alias:
+        return None
+    import re as _re
+    mm = _re.search(r"\[models\.%s\](.*?)(?=\n\[|\Z)" % _re.escape(alias), txt, _re.S)
+    if not mm:
+        return None
+    model_body = mm.group(1)
+    prov = _re.search(r'provider\s*=\s*"([^"]+)"', model_body)
+    mid = _re.search(r'model\s*=\s*"([^"]+)"', model_body)
+    mctx = _re.search(r'max_context_size\s*=\s*(\d+)', model_body)
+    if not prov or not mid:
+        return None
+    pm = _re.search(r"\[providers\.%s\](.*?)(?=\n\[|\Z)" % _re.escape(prov.group(1)), txt, _re.S)
+    if not pm:
+        return None
+    pbody = pm.group(1)
+    def get(k):
+        x = _re.search(r'%s\s*=\s*"([^"]*)"' % k, pbody)
+        return x.group(1) if x else ""
+    return {"name": "%s 默认（%s）" % (NAME, alias), "alias": alias,
+            "base_url": get("base_url"), "api_key": get("api_key"),
+            "model_id": mid.group(1), "kind": get("type") or "openai",
+            "max_context": int(mctx.group(1)) if mctx else 131072}
+
+
 def heartbeat():
     with LOCK:
         ids = set(KNOWN) | set(PROCS)
@@ -820,7 +850,8 @@ def heartbeat():
             state = "busy" if aid in ACTIVE else ("on" if alive else "off")
             agents.append({"id": aid, "state": state})
     payload = {"agents": agents, "host": NAME,
-               "skill_store": skill_store(), "skill_installs": skill_installs()}
+               "skill_store": skill_store(), "skill_installs": skill_installs(),
+               "default_model": local_default_model()}
     try:
         http("/api/daemon/hb", payload, timeout=15)
     except Exception as e:

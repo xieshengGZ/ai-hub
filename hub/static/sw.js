@@ -1,6 +1,6 @@
 /* AI 中枢 · service worker：只缓存壳，不缓存数据 */
-const CACHE = 'aihub-v45';
-const SHELL = ['./', 'index.html', 'app.css?v=40', 'app.js?v=73', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'manifest.webmanifest'];
+const CACHE = 'aihub-v46';
+const SHELL = ['./', 'index.html', 'app.css?v=40', 'app.js?v=74', 'icon-180.png', 'icon-192.png', 'icon-512.png', 'manifest.webmanifest'];
 
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(CACHE).then(c => c.addAll(SHELL).catch(() => {})).then(() => self.skipWaiting()));

@@ -495,9 +495,29 @@ def daemon_hb(d):
             (d["host"], now()))
     for a in d.get("agents", []):
         run("UPDATE agents SET status=?, seen=? WHERE id=?", (a.get("state", "on"), now(), a.get("id")))
-    # 共享技能库（每台机器 ~/aihub/skills）+ 各 agent 的安装情况
     changed = 0
     host_ = d.get("host") or ""
+    # 机器上报的默认模型：入库并接管该主机上还没选模型的 agent
+    dm = d.get("default_model") or None
+    if dm and dm.get("base_url") and dm.get("api_key"):
+        base_slug = re.sub(r"-+", "-", re.sub(r"[^a-z0-9_-]", "-", (host_ or "").lower())).strip("-")
+        slug = (base_slug or "host") + "-default"
+        run("""INSERT INTO models(id,name,base_url,model_id,api_key,kind,max_context,created)
+               VALUES(?,?,?,?,?,?,?,?)
+               ON CONFLICT(id) DO UPDATE SET name=excluded.name, base_url=excluded.base_url,
+                 model_id=excluded.model_id, api_key=excluded.api_key, kind=excluded.kind,
+                 max_context=excluded.max_context""",
+            (slug, (dm.get("name") or slug)[:80], dm.get("base_url"), dm.get("model_id"),
+             dm.get("api_key"), dm.get("kind") or "openai",
+             int(dm.get("max_context") or 131072), now()))
+        for a in rows("""SELECT id FROM agents WHERE host=? AND deleted=0
+                         AND (model IS NULL OR model='')""", (host_,)):
+            run("UPDATE agents SET model=? WHERE id=?", (slug, a["id"]))
+            run("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
+                (a["id"], "restart", "", now(), host_))
+            changed += 1
+
+    # 共享技能库（每台机器 ~/aihub/skills）+ 各 agent 的安装情况
     store = d.get("skill_store")
     if store is not None:
         keep = set()

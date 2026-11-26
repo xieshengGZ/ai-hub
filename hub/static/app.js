@@ -766,8 +766,9 @@ function fillModelSelects(){
   const sel = $('naModel');
   if(sel){
     const cur = sel.value;
-    sel.innerHTML = '<option value="">继承本机配置</option>' +
-      MODELS.map(m => `<option value="${escAttr(m.id)}">${esc(m.name)}</option>`).join('');
+    sel.innerHTML = MODELS.length
+      ? MODELS.map(m => `<option value="${escAttr(m.id)}">${esc(m.name)}</option>`).join('')
+      : '<option value="">（暂无模型配置，先用机器默认）</option>';
     if(cur) sel.value = cur;
   }
 }
@@ -778,8 +779,9 @@ function openModelPick(){
     `<div class="item" onclick="pickModel('${escAttr(id)}')"><span class="nm">${esc(name)}<br>` +
     `<span style="font-size:12px;color:#8B949A">${esc(sub || '')}</span></span>` +
     (CUR.model === id ? '<span class="r" style="color:#0F5B63">当前</span>' : '') + '</div>';
-  box.innerHTML = row('', '继承本机配置', '跟随机器上的 ~/.kimi-code/config.toml') +
-    MODELS.map(m => row(m.id, m.name, m.model_id + ' · ' + m.base_url)).join('');
+  box.innerHTML = MODELS.length
+    ? MODELS.map(m => row(m.id, m.name, m.model_id + ' · ' + m.base_url)).join('')
+    : '<div class="hint">还没有模型配置，先到「模型配置」里加一条。</div>';
   openSheet('mpick');
 }
 async function pickModel(id){
