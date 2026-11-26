@@ -63,14 +63,35 @@ def http(path, data=None, headers=None, raw=False, timeout=60):
 
 
 SEND_SH = r"""#!/usr/bin/env bash
-# 把本机文件发给用户：./aihub-send.sh <文件路径>
+# 发文件：
+#   ./aihub-send.sh <文件>              发给用户（挂在这条回复下面）
+#   ./aihub-send.sh <文件> --to <agent>  投递给另一个 agent 的暂存区
 set -euo pipefail
-f="${1:?用法: ./aihub-send.sh <文件路径>}"
+f=""; to=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --to) to="${2:?--to 后面要跟 agent id}"; shift 2;;
+    *) f="$1"; shift;;
+  esac
+done
+[ -n "$f" ] || { echo "用法: ./aihub-send.sh <文件> [--to <agent>]"; exit 2; }
 [ -f "$f" ] || { echo "没有这个文件: $f"; exit 1; }
 name=$(basename "$f")
 size=$(wc -c <"$f" | tr -d ' ')
 mime=$(file -b --mime-type "$f" 2>/dev/null || echo application/octet-stream)
-body=$(python3 - "$name" "$size" "$f" "$mime" <<'PYEOF'
+
+if [ -n "$to" ]; then
+  body=$(python3 - "$name" "$size" "$mime" "$to" <<'PYEOF'
+import json, os, sys
+name, size, mime, to = sys.argv[1:5]
+print(json.dumps({"from": os.environ.get("AIHUB_AGENT", ""), "to": to,
+                  "name": name, "size": int(size), "mime": mime}, ensure_ascii=False))
+PYEOF
+)
+  resp=$(curl -fsS -X POST "$AIHUB_HUB/api/daemon/file_send" -H "X-Daemon: $AIHUB_TOKEN" \
+          -H 'Content-Type: application/json' --data "$body")
+else
+  body=$(python3 - "$name" "$size" "$f" "$mime" <<'PYEOF'
 import json, os, sys
 name, size, path, mime = sys.argv[1:5]
 print(json.dumps({"agent": os.environ.get("AIHUB_AGENT", ""), "name": name,
@@ -78,14 +99,16 @@ print(json.dumps({"agent": os.environ.get("AIHUB_AGENT", ""), "name": name,
                  ensure_ascii=False))
 PYEOF
 )
-resp=$(curl -fsS -X POST "$AIHUB_HUB/api/daemon/artifact" -H "X-Daemon: $AIHUB_TOKEN" \
-        -H 'Content-Type: application/json' --data "$body")
+  resp=$(curl -fsS -X POST "$AIHUB_HUB/api/daemon/artifact" -H "X-Daemon: $AIHUB_TOKEN" \
+          -H 'Content-Type: application/json' --data "$body")
+fi
+
 fid=$(printf '%s' "$resp" | sed -E 's/.*"id" *: *"([0-9a-f]+)".*/\1/')
 [ -n "$fid" ] || { echo "上传失败: $resp"; exit 1; }
 curl -fsS -X POST "$AIHUB_HUB/api/daemon/upload" -H "X-Daemon: $AIHUB_TOKEN" \
      -H "X-File-Id: $fid" --data-binary @"$f" >/dev/null
 printf '%s/%s\n' "$(cd "$(dirname "$f")" && pwd)" "$name" >> "$(dirname "$0")/.aihub-sent" 2>/dev/null || true
-echo "已发送给用户：$name（$size 字节）"
+if [ -n "$to" ]; then echo "已投递给 $to：$name（$size 字节）"; else echo "已发送给用户：$name（$size 字节）"; fi
 """
 
 
@@ -110,6 +133,8 @@ class Acp:
                  "\n## 给用户发文件\n\n需要把文件交给用户时，在本目录执行：\n\n"
                  "    ./aihub-send.sh <文件路径>\n\n"
                  "它会把文件上传到中枢并挂在你这条回复下面，用户能直接下载。\n"
+                 "要发给另一个 agent，加 `--to <agent_id>`，文件会进入对方的暂存区，\n"
+                 "对方下一轮对话会自动收到。\n"
                  "不要让用户自己拖拽或手动上传。\n"]
         with open(os.path.join(cwd, "AGENTS.md"), "w", encoding="utf-8") as f:
             f.write("".join(lines))
@@ -303,7 +328,7 @@ class Acp:
             raise RuntimeError(json.dumps(msg["error"], ensure_ascii=False)[:300])
         return msg.get("result") or {}
 
-    def prompt_stream(self, parts, on_chunk, is_canceled):
+    def prompt_stream(self, parts, on_chunk, is_canceled, on_activity=None):
         """发一轮提示，边收边回调。返回 stopReason 或 'canceled'。"""
         self.last_used = time.time()
         self.skills_sig = ""
@@ -349,6 +374,11 @@ class Acp:
                 on_chunk(None)
                 continue
             upd = (msg.get("params") or {}).get("update") or {}
+            if on_activity:
+                try:
+                    on_activity()
+                except Exception:
+                    pass
             if upd.get("sessionUpdate") == "agent_message_chunk":
                 t = (upd.get("content") or {}).get("text") or ""
                 if t:
@@ -492,7 +522,7 @@ def _run_job(job, agent, files):
                 push()
             elif time.time() - state["last"] > 2.0:
                 push(force=True)      # 空 chunk 只为取回 cancel 标记
-            if time.time() - state["last_text"] > 300:
+            if time.time() - state["last_text"] > 900:
                 state["stalled"] = True
                 state["cancel"] = True
             return
@@ -511,7 +541,8 @@ def _run_job(job, agent, files):
     sys.stderr.write("[job] acp ready\n"); sys.stderr.flush()
     try:
         try:
-            stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"])
+            stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"],
+                               lambda: state.__setitem__("last_text", time.time()))
         except RuntimeError as e:
             # CLI 侧会话被上一轮卡住（turn.agent_busy）：杀掉实例、丢掉旧 session，重开一次
             if "agent_busy" in str(e) or "already in progress" in str(e):
@@ -522,7 +553,8 @@ def _run_job(job, agent, files):
                     os.remove(os.path.join(LOG_DIR, "sid-%s.txt" % agent["id"]))
                 except OSError:
                     pass
-                stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"])
+                stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"],
+                                   lambda: state.__setitem__("last_text", time.time()))
             else:
                 raise
         push(force=True)

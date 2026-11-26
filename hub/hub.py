@@ -1059,6 +1059,21 @@ class Handler(BaseHTTPRequestHandler):
                         (a["id"], "restart", "", now(), host_))
                 bump()
                 return self._json({"ok": True, "model": slug})
+            if p == "/api/daemon/file_send":
+                if not daemon_ok(self):
+                    return self._json({"error": "forbidden"}, 403)
+                d = self._body()
+                to_, from_ = (d.get("to") or "").strip(), (d.get("from") or "").strip()
+                nm = (d.get("name") or "file")[:120]
+                sz = int(d.get("size") or 0)
+                mime = d.get("mime") or ""
+                if not one("SELECT id FROM agents WHERE id=? AND deleted=0", (to_,)):
+                    raise Api(404, "目标 agent 不存在：%s" % to_)
+                fid = uuid.uuid4().hex[:12]
+                run("""INSERT INTO files(id,name,size,mime,agent,kind,path,ts,msg,stored)
+                       VALUES(?,?,?,?,?,'in',?,?,NULL,?)""",
+                    (fid, nm, sz, mime, to_, "", now(), ""))
+                return self._json({"id": fid, "to": to_, "from": from_})
             if p == "/api/daemon/artifact":
                 return self._json(artifact_add(self._body()))
             if p == "/api/daemon/upload":
