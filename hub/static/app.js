@@ -723,7 +723,8 @@ function renderModelList(){
   if(!MODELS.length){ box.innerHTML = '<div class="hint">还没有配置模型。下面填好保存即可。</div>'; return; }
   box.innerHTML = MODELS.map(m =>
     `<div class="item"><span class="nm">${esc(m.name)}<br>` +
-    `<span style="font-size:12px;color:#8B949A">${esc(m.model_id)} · ${esc(m.base_url)} · sk ${esc(m.sk_tail || '—')}</span></span>` +
+    `<span style="font-size:12px;color:#8B949A">${esc(m.model_id)} · ${esc(m.base_url)} · sk ${esc(m.sk_tail || '—')}` +
+    `${m.kind === 'kimi' ? ' · kimi 适配' : ''}</span></span>` +
     `<span class="r">${m.agents || 0} 个 agent</span>` +
     `<span class="r" style="color:#0F5B63;margin-left:10px" onclick="editModel('${m.id}')">编辑</span>` +
     `<span class="r" style="color:#A33A2B;margin-left:10px" onclick="deleteModel('${m.id}')">删除</span></div>`).join('');
@@ -734,7 +735,6 @@ function editModel(id){
   $('mdBase').value = m.base_url || '';
   $('mdId').value = m.model_id || '';
   $('mdSk').value = '';
-  $('mdKind').value = m.kind || 'openai';
   $('mdName').dataset.editId = id;
   toast('已填入表单，sk 留空则不改');
 }
@@ -744,8 +744,7 @@ async function saveModel(){
     name: $('mdName').value.trim(),
     base_url: $('mdBase').value.trim(),
     model_id: $('mdId').value.trim(),
-    sk: $('mdSk').value.trim(),
-    kind: $('mdKind').value
+    sk: $('mdSk').value.trim()
   };
   try{
     const d = await api('api/model/save', {method:'POST', headers:{'Content-Type':'application/json'},

@@ -231,11 +231,7 @@
       <input id="mdId" placeholder="模型名，例：deepseek-chat" class="mdin">
       <input id="mdSk" placeholder="sk（编辑时留空表示不改）" class="mdin">
       <div style="display:flex;gap:8px">
-        <select id="mdKind" class="mdin" style="flex:1">
-          <option value="openai">OpenAI 兼容</option>
-          <option value="kimi">Kimi / Moonshot</option>
-        </select>
-        <button class="pick" style="flex:none;padding:10px 16px" onclick="saveModel()">保存</button>
+        <button class="pick" style="flex:1;padding:10px 16px" onclick="saveModel()">保存</button>
       </div>
     </div>
     <div class="hint" style="padding:0 16px 10px">改模型只影响选中它的 agent；正在跑的会话会在下一轮重启后生效。</div>
@@ -273,6 +269,6 @@
     <div id="artList"></div>
   </div>
 </div>
-<script src="app.js?v=77"></script>
+<script src="app.js?v=78"></script>
 </body>
 </html>

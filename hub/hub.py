@@ -1164,7 +1164,9 @@ class Handler(BaseHTTPRequestHandler):
                 mid = (d.get("model_id") or "").strip()
                 if not name or not base or not mid:
                     raise Api(400, "名字、base url、模型名都要填")
-                kind = "kimi" if (d.get("kind") or "") == "kimi" else "openai"
+                # 适配器类型按 base url 自动判断，界面不再让人选
+                _b = base.lower()
+                kind = "kimi" if ("moonshot" in _b or "kimi" in _b) else "openai"
                 def _slug(v):
                     return re.sub(r"-+", "-", re.sub(r"[^a-z0-9_-]", "-", (v or "").lower())).strip("-")
                 slug = (d.get("id") or "").strip() or _slug(mid) or _slug(name) or ("m%d" % int(now()))
