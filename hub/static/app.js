@@ -278,6 +278,7 @@ async function pull(reset, keepAnchor){
   const mn = modelName(CUR && CUR.model);
   $('chatSub').textContent = st + (d.agent.always_on ? ' · 常驻' : '') + ' · ' + mn;
   renderJobLine();
+  paintCurModel();
 }
 
 let TIMERS = [];
@@ -771,6 +772,11 @@ function fillModelSelects(){
       : '<option value="">（暂无模型配置，先用机器默认）</option>';
     if(cur) sel.value = cur;
   }
+}
+function paintCurModel(){
+  const el = $('curModelLabel');
+  if(!el) return;
+  el.textContent = CUR ? modelName(CUR.model) : '—';
 }
 function openModelPick(){
   if(!CUR) return;
@@ -1425,7 +1431,7 @@ function openSheet(k){
   if(k === 's'){ setTimeout(()=>$('qInput').focus(), 150); }
   if(k === 'team'){ loadTeam(); $('teamCount').textContent = (CUR && CUR.team) ? CUR.team + ' 个' : ''; }
   if(k === 'a') loadStaged();
-  if(k === 'm'){ renderJobLine(); paintAlways(); paintAgentInfo(); loadArtifacts(); }
+  if(k === 'm'){ renderJobLine(); paintAlways(); paintAgentInfo(); paintCurModel(); loadArtifacts(); }
 }
 function closeSheet(fromHistory){
   $('mask').classList.remove('on');
