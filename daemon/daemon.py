@@ -387,7 +387,8 @@ def fetch_file(fid, name, cwd):
 
 
 def scan_artifacts(cwd, since):
-    skip = {".git", "node_modules", "__pycache__", ".kimi", ".kimi-code", ".aihub-inbox"}
+    skip = {".git", "node_modules", "__pycache__", ".kimi", ".kimi-code",
+            ".kimi-home", ".aihub-inbox"}
     skip_files = {"AGENTS.md", ".DS_Store", "aihub-send.sh", ".aihub-sent"}
     sent = set()
     try:
@@ -397,8 +398,11 @@ def scan_artifacts(cwd, since):
         pass
     out = []
     for root, dirs, files in os.walk(cwd):
-        dirs[:] = [d for d in dirs if d not in skip]
+        # 所有点开头的目录（.kimi-home / .git / .aihub-inbox …）都不是产出
+        dirs[:] = [d for d in dirs if d not in skip and not d.startswith(".")]
         for fn in files:
+            if fn.startswith("."):
+                continue
             p = os.path.join(root, fn)
             try:
                 st = os.stat(p)
