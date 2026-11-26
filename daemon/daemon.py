@@ -431,6 +431,8 @@ def run_job(job, agent, files):
 
 def _run_job(job, agent, files):
     jid, cwd, started = job["id"], agent["cwd"], time.time()
+    with LOCK:
+        ACTIVE.add(agent["id"])
     sys.stderr.write("[job] start %s agent=%s cwd=%s\n" % (jid, agent["id"], cwd)); sys.stderr.flush()
     try:
         http("/api/daemon/event", {"job": jid, "kind": "start"}, timeout=15)
@@ -887,6 +889,12 @@ def refresh_agents():
             migrate_user_skills()
             for op in d.get("ops", []):
                 try:
+                    # 正在跑任务的 agent 不打断：把重启/清理类操作推迟到它空闲
+                    if op.get("agent"):
+                        with LOCK:
+                            busy = op["agent"] in ACTIVE
+                        if busy:
+                            continue
                     a = PROCS.pop(op["agent"], None)
                     if a:
                         a.kill()
