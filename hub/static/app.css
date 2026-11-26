@@ -329,3 +329,5 @@ body.pv-open > .phone{visibility:hidden}   /* 预览盖住时后面整页不可�
 
 .loadmore{display:block;width:100%;margin:2px 0 6px;padding:9px;border:1px dashed var(--line);border-radius:10px;
   background:#FAFBF9;color:var(--sub);font:inherit;font-size:12.5px;cursor:pointer}
+
+.mdin{width:100%;padding:10px 12px;border:1px solid #D8DED6;border-radius:10px;font:inherit;font-size:14.5px;outline:0;background:#fff}

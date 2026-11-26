@@ -10,7 +10,7 @@
 <link rel="shortcut icon" href="icon-32.png">
 <link rel="manifest" href="manifest.webmanifest">
 <link rel="apple-touch-icon" href="icon-180.png">
-<link rel="stylesheet" href="app.css?v=39">
+<link rel="stylesheet" href="app.css?v=40">
 </head>
 <body>
 <svg width="0" height="0" style="position:absolute"><defs>
@@ -82,7 +82,7 @@
   <section id="s-chat" class="hide" style="display:none;flex-direction:column;height:100%">
     <div class="nav">
       <div class="ic" onclick="back()"><svg width="22" height="22"><use href="#i-back"/></svg></div>
-      <div class="ttl"><h1 id="chatName">—</h1><p id="chatSub">—</p></div>
+      <div class="ttl"><h1 id="chatName">—</h1><p id="chatSub" onclick="openModelPick()" style="cursor:pointer">—</p></div>
       <div class="ic" onclick="refreshChat()"><svg width="20" height="20"><path d="M20 12a8 8 0 1 1-2.3-5.6M20 4v5h-5" stroke="currentColor" stroke-width="1.6" fill="none" stroke-linecap="round"/></svg></div>
       <div class="ic" onclick="openSheet('m')"><svg width="22" height="22"><use href="#i-more"/></svg></div>
     </div>
@@ -171,6 +171,7 @@
     <div class="sh"><b>中枢</b><button class="x" onclick="closeSheet()"><svg width="20" height="20"><use href="#i-close"/></svg></button></div>
     <button class="item" onclick="closeSheet();newAgent()"><span class="nm">新建 agent</span></button>
     <button class="item" onclick="openSheet('s')"><span class="nm">搜索消息与文件</span></button>
+    <button class="item" onclick="openSheet('models')"><span class="nm">模型配置</span><span class="r" id="modelCount"></span></button>
     <button class="item" onclick="openSheet('host')"><span class="nm">主机</span><span class="r" id="hostCount"></span></button>
     <button class="item" onclick="openSheet('arch')"><span class="nm">已删除的 agent</span><span class="r" id="archCount"></span></button>
     <button class="item" onclick="refreshList().then(()=>{closeSheet();toast('已刷新')})"><span class="nm">刷新列表</span></button>
@@ -188,6 +189,7 @@
     <div class="form">
       <div class="fld"><label>名字</label><input id="naName" placeholder="例：代码审查"></div>
       <div class="fld"><label>主机</label><div class="selwrap"><select id="naHost"></select></div></div>
+      <div class="fld"><label>模型</label><div class="selwrap"><select id="naModel"></select></div></div>
       <div class="fld"><label>工作目录（留空自动建）</label><input id="naCwd" placeholder="/home/ubuntu/aihub/agents/..."></div>
       <div class="fld"><label>系统提示词</label><textarea id="naPrompt" rows="5" placeholder="你是…，回答简洁，先给结论。"></textarea></div>
       <div class="fld" style="display:flex;align-items:center">
@@ -216,6 +218,36 @@
     <div class="hint" style="padding:0 16px 10px">技能存在每台机器的共享库（~/aihub/skills）。「安装」= 在 agent 目录下建一个链接；「卸载」只删链接；只有没有任何 agent 装着时才能从库里删除。</div>
   </div>
 
+  <!-- 模型配置 -->
+  <div class="sheet" id="sheet-models">
+    <div class="grab"></div>
+    <div class="sh"><b>模型配置</b><button class="x" onclick="closeSheet()"><svg width="20" height="20"><use href="#i-close"/></svg></button></div>
+    <div class="hint">每条填三样：base url、模型名、sk。sk 只在中枢保存，列表里只显示后四位。</div>
+    <div id="modelList"></div>
+    <div style="padding:10px 16px 4px;display:flex;flex-direction:column;gap:8px">
+      <input id="mdName" placeholder="显示名，例：DeepSeek-V4" class="mdin">
+      <input id="mdBase" placeholder="base url，例：https://api.deepseek.com/v1" class="mdin">
+      <input id="mdId" placeholder="模型名，例：deepseek-chat" class="mdin">
+      <input id="mdSk" placeholder="sk（编辑时留空表示不改）" class="mdin">
+      <div style="display:flex;gap:8px">
+        <select id="mdKind" class="mdin" style="flex:1">
+          <option value="openai">OpenAI 兼容</option>
+          <option value="kimi">Kimi / Moonshot</option>
+        </select>
+        <button class="pick" style="flex:none;padding:10px 16px" onclick="saveModel()">保存</button>
+      </div>
+    </div>
+    <div class="hint" style="padding:0 16px 10px">改模型只影响选中它的 agent；正在跑的会话会在下一轮重启后生效。</div>
+  </div>
+
+  <!-- 会话内换模型 -->
+  <div class="sheet" id="sheet-mpick">
+    <div class="grab"></div>
+    <div class="sh"><b>选择模型</b><button class="x" onclick="closeSheet()"><svg width="20" height="20"><use href="#i-close"/></svg></button></div>
+    <div class="hint">切换后保留对话历史，从下一轮开始用新模型回答。</div>
+    <div id="mpickList"></div>
+  </div>
+
   <!-- 团队 -->
   <div class="sheet" id="sheet-team">
     <div class="grab"></div>
@@ -240,6 +272,6 @@
     <div id="artList"></div>
   </div>
 </div>
-<script src="app.js?v=72"></script>
+<script src="app.js?v=73"></script>
 </body>
 </html>

@@ -97,6 +97,7 @@ class Acp:
         self.pending, self.notify = {}, queue.Queue()
         self.last_used = time.time()
         self.skills_sig = ""
+        self.model_sig = None
         cwd = resolve_cwd(agent)
         agent["cwd"] = cwd
         os.makedirs(cwd, exist_ok=True)
@@ -120,8 +121,62 @@ class Acp:
         except OSError as e:
             sys.stderr.write("write aihub-send.sh failed: %r\n" % e)
 
+    def _ensure_model_home(self):
+        """按 agent 选的模型生成独立 KIMI_CODE_HOME，返回 (home, 额外启动参数)。"""
+        cfg = self.agent.get("model_cfg") or None
+        sig = json.dumps(cfg, sort_keys=True, ensure_ascii=False) if cfg else ""
+        if sig != self.model_sig:
+            self.model_sig = sig
+            if self.p and self.p.poll() is None:
+                sys.stderr.write("模型配置变化，重启实例: %s\n" % self.agent["id"])
+                self.kill()
+        if not cfg:
+            return None, []
+        home = os.path.join(self.agent["cwd"], ".kimi-home")
+        os.makedirs(home, exist_ok=True)
+        src_home = os.path.expanduser("~/.kimi-code")
+        for fn in ("device_id", "region"):
+            s_p, d_p = os.path.join(src_home, fn), os.path.join(home, fn)
+            if os.path.isfile(s_p) and not os.path.exists(d_p):
+                try:
+                    shutil.copy2(s_p, d_p)
+                except OSError:
+                    pass
+
+        def esc(v):
+            return str(v or "").replace("\\", "\\\\").replace('"', '\\"')
+
+        toml = ('default_model = "hub"\n\n'
+                '[providers.hub]\n'
+                'type = "%s"\n'
+                'base_url = "%s"\n'
+                'api_key = "%s"\n\n'
+                '[models.hub]\n'
+                'provider = "hub"\n'
+                'model = "%s"\n'
+                'display_name = "%s"\n'
+                'max_context_size = %d\n'
+                'capabilities = [ "tool_use" ]\n') % (
+            esc(cfg.get("kind") or "openai"), esc(cfg.get("base_url")),
+            esc(cfg.get("api_key")), esc(cfg.get("model_id")), esc(cfg.get("name") or "hub"),
+            int(cfg.get("max_context") or 131072))
+        path = os.path.join(home, "config.toml")
+        try:
+            old_txt = open(path, encoding="utf-8").read()
+        except OSError:
+            old_txt = ""
+        if old_txt != toml:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(toml)
+            try:
+                os.chmod(path, 0o600)
+            except OSError:
+                pass
+        return home, ["--model", "hub"]
+
     def ensure(self):
         self.materialize_skills()
+        home0, margs0 = self._ensure_model_home()
         sys.stderr.write("[acp] ensure %s p=%r sid=%r\n" % (self.agent["id"], bool(self.p), self.sid)); sys.stderr.flush()
         if self.p and self.p.poll() is None and self.sid:
             return
@@ -135,10 +190,13 @@ class Acp:
             kw["startupinfo"] = si
         sk_dir = os.path.join(self.agent["cwd"], "skills")
         os.makedirs(sk_dir, exist_ok=True)
+        home, margs = home0, margs0
         env = dict(os.environ)
         env.update({"AIHUB_HUB": HUB, "AIHUB_TOKEN": TOKEN, "AIHUB_AGENT": self.agent.get("id", "")})
-        self.p = subprocess.Popen(kimi_argv() + ["--skills-dir", sk_dir, "acp"], cwd=self.agent["cwd"],
-                                  env=env,
+        if home:
+            env["KIMI_CODE_HOME"] = home
+        self.p = subprocess.Popen(kimi_argv() + margs + ["--skills-dir", sk_dir, "acp"],
+                                  cwd=self.agent["cwd"], env=env,
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, bufsize=1,
                                   encoding="utf-8", errors="replace", **kw)

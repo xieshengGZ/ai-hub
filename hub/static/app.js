@@ -108,6 +108,7 @@ async function boot(){
     const d = await api('api/bootstrap');
     AGENTS = d.agents || [];
     renderList();
+    loadModels();
     show('s-list');
     if(DESK() && !CUR){ placeholder(); }
     const h = location.hash.replace('#','');
@@ -274,7 +275,8 @@ async function pull(reset, keepAnchor){
   renderBrief();
   const st = d.agent.state === 'busy' ? '正在执行任务'
            : (d.agent.state === 'on' ? '在线' : '未运行（按需）');
-  $('chatSub').textContent = st + (d.agent.always_on ? ' · 常驻' : '');
+  const mn = modelName(CUR && CUR.model);
+  $('chatSub').textContent = st + (d.agent.always_on ? ' · 常驻' : '') + ' · ' + mn;
   renderJobLine();
 }
 
@@ -702,6 +704,96 @@ function paintMode(){
 }
 
 /* ---------- 附件 ---------- */
+/* ---------- 模型配置 ---------- */
+let MODELS = [];
+function modelName(id){
+  if(!id) return '本机默认';
+  const m = MODELS.find(x => x.id === id);
+  return m ? (m.name || m.model_id) : id;
+}
+async function loadModels(){
+  try{ const d = await api('api/models'); MODELS = d.models || []; }
+  catch(e){ MODELS = []; }
+  const mc = $('modelCount'); if(mc) mc.textContent = MODELS.length ? MODELS.length + ' 个' : '';
+  renderModelList(); fillModelSelects();
+}
+function renderModelList(){
+  const box = $('modelList'); if(!box) return;
+  if(!MODELS.length){ box.innerHTML = '<div class="hint">还没有配置模型。下面填好保存即可。</div>'; return; }
+  box.innerHTML = MODELS.map(m =>
+    `<div class="item"><span class="nm">${esc(m.name)}<br>` +
+    `<span style="font-size:12px;color:#8B949A">${esc(m.model_id)} · ${esc(m.base_url)} · sk ${esc(m.sk_tail || '—')}</span></span>` +
+    `<span class="r">${m.agents || 0} 个 agent</span>` +
+    `<span class="r" style="color:#0F5B63;margin-left:10px" onclick="editModel('${m.id}')">编辑</span>` +
+    `<span class="r" style="color:#A33A2B;margin-left:10px" onclick="deleteModel('${m.id}')">删除</span></div>`).join('');
+}
+function editModel(id){
+  const m = MODELS.find(x => x.id === id); if(!m) return;
+  $('mdName').value = m.name || '';
+  $('mdBase').value = m.base_url || '';
+  $('mdId').value = m.model_id || '';
+  $('mdSk').value = '';
+  $('mdKind').value = m.kind || 'openai';
+  $('mdName').dataset.editId = id;
+  toast('已填入表单，sk 留空则不改');
+}
+async function saveModel(){
+  const body = {
+    id: $('mdName').dataset.editId || '',
+    name: $('mdName').value.trim(),
+    base_url: $('mdBase').value.trim(),
+    model_id: $('mdId').value.trim(),
+    sk: $('mdSk').value.trim(),
+    kind: $('mdKind').value
+  };
+  try{
+    const d = await api('api/model/save', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(body)});
+    toast('已保存'); delete $('mdName').dataset.editId;
+    ['mdName','mdBase','mdId','mdSk'].forEach(k => { $(k).value = ''; });
+    loadModels(); refreshList();
+  }catch(e){ alert(e.message); }
+}
+async function deleteModel(id){
+  if(!confirm('删除这个模型配置？还有 agent 在用时会被拦住。')) return;
+  try{
+    await api('api/model/delete', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id})});
+    toast('已删除'); loadModels();
+  }catch(e){ alert(e.message); }
+}
+function fillModelSelects(){
+  const sel = $('naModel');
+  if(sel){
+    const cur = sel.value;
+    sel.innerHTML = '<option value="">继承本机配置</option>' +
+      MODELS.map(m => `<option value="${escAttr(m.id)}">${esc(m.name)}</option>`).join('');
+    if(cur) sel.value = cur;
+  }
+}
+function openModelPick(){
+  if(!CUR) return;
+  const box = $('mpickList'); if(!box) return;
+  const row = (id, name, sub) =>
+    `<div class="item" onclick="pickModel('${escAttr(id)}')"><span class="nm">${esc(name)}<br>` +
+    `<span style="font-size:12px;color:#8B949A">${esc(sub || '')}</span></span>` +
+    (CUR.model === id ? '<span class="r" style="color:#0F5B63">当前</span>' : '') + '</div>';
+  box.innerHTML = row('', '继承本机配置', '跟随机器上的 ~/.kimi-code/config.toml') +
+    MODELS.map(m => row(m.id, m.name, m.model_id + ' · ' + m.base_url)).join('');
+  openSheet('mpick');
+}
+async function pickModel(id){
+  if(!CUR) return;
+  try{
+    await api('api/agent/model', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({agent: CUR.id, model: id})});
+    CUR.model = id;
+    closeSheet();
+    toast(id ? ('已切到 ' + modelName(id) + '，下一轮生效') : '已切回本机默认，下一轮生效');
+    pull(false).catch(()=>{});
+  }catch(e){ alert(e.message); }
+}
+
 /* ---------- 斜杠技能 ---------- */
 let SKILLS = [], SLASH = [], SLASH_IDX = 0, COMPOSING = false;
 async function loadSkillCache(){

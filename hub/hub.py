@@ -130,9 +130,14 @@ def init():
           id TEXT PRIMARY KEY, name TEXT, size INTEGER, mime TEXT, agent TEXT,
           kind TEXT, path TEXT, ts REAL, msg INTEGER, stored TEXT);
         CREATE TABLE IF NOT EXISTS meta(k TEXT PRIMARY KEY, v TEXT);
+        CREATE TABLE IF NOT EXISTS models(
+          id TEXT PRIMARY KEY, name TEXT, base_url TEXT, model_id TEXT, api_key TEXT,
+          kind TEXT DEFAULT 'openai', max_context INTEGER DEFAULT 131072, created REAL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS skills(
-          id TEXT PRIMARY KEY, name TEXT, summary TEXT, when_to_use TEXT, body TEXT,
-          version TEXT DEFAULT '1', created REAL DEFAULT 0);
+          id TEXT, name TEXT, summary TEXT, when_to_use TEXT, body TEXT,
+          version TEXT DEFAULT '1', created REAL DEFAULT 0,
+          source TEXT DEFAULT 'hub', origin_host TEXT DEFAULT '',
+          UNIQUE(id, origin_host));
         CREATE TABLE IF NOT EXISTS agent_skills(
           agent TEXT, skill TEXT, enabled INTEGER DEFAULT 1, PRIMARY KEY(agent, skill));
         CREATE TABLE IF NOT EXISTS hosts(
@@ -152,9 +157,30 @@ def init():
             except Exception:
                 pass
         try:
+            c.execute("ALTER TABLE models ADD COLUMN max_context INTEGER DEFAULT 131072")
+        except Exception:
+            pass
+        try:
             c.execute("ALTER TABLE daemon_ops ADD COLUMN host TEXT")
         except Exception:
             pass
+        cols = [r[1] for r in c.execute("PRAGMA table_info(skills)")]
+        ddl = (c.execute("SELECT sql FROM sqlite_master WHERE type='table' AND name='skills'").fetchone() or [""])[0] or ""
+        need_rebuild = ("origin_host" not in cols) or ("id TEXT PRIMARY KEY" in ddl)
+        if need_rebuild:
+            c.executescript("""
+              DROP TABLE IF EXISTS skills_new;
+              CREATE TABLE skills_new(
+                id TEXT, name TEXT, summary TEXT, when_to_use TEXT, body TEXT,
+                version TEXT DEFAULT '1', created REAL DEFAULT 0,
+                source TEXT DEFAULT 'hub', origin_host TEXT DEFAULT '',
+                UNIQUE(id, origin_host));
+              INSERT OR IGNORE INTO skills_new(id,name,summary,when_to_use,body,version,created,source,origin_host)
+                SELECT id,name,summary,when_to_use,body,version,created,
+                       COALESCE(source,'hub'), COALESCE(origin_host,'') FROM skills;
+              DROP TABLE skills;
+              ALTER TABLE skills_new RENAME TO skills;
+            """)
         for col in ("source TEXT DEFAULT 'hub'", "origin_host TEXT"):
             try:
                 c.execute("ALTER TABLE skills ADD COLUMN %s" % col)
@@ -411,7 +437,8 @@ def daemon_poll(wait_s, host=""):
                 return {"job": {"id": j["id"], "text": one("SELECT text FROM messages WHERE id=?",
                                                            (j["user_msg"],))["text"]},
                         "agent": {"id": ag["id"], "name": ag["name"], "cwd": ag["cwd"],
-                                  "prompt": ag["prompt"], "model": ag["model"], "skills": skills},
+                                  "prompt": ag["prompt"], "model": ag["model"],
+                                  "model_cfg": model_cfg_for(ag["model"]), "skills": skills},
                         "files": [{"id": f["id"], "name": f["name"],
                                    "mime": f["mime"] or "",
                                    "kind": file_kind(f["mime"], f["name"])} for f in files]}
@@ -451,6 +478,17 @@ def daemon_event(d):
     return {"cancel": False}
 
 
+def model_cfg_for(mid):
+    if not mid:
+        return None
+    m = one("SELECT * FROM models WHERE id=?", (mid,))
+    if not m:
+        return None
+    return {"id": m["id"], "name": m["name"], "base_url": m["base_url"],
+            "model_id": m["model_id"], "api_key": m["api_key"],
+            "kind": (m["kind"] or "openai"), "max_context": int(m["max_context"] or 131072)}
+
+
 def daemon_hb(d):
     if d.get("host"):
         run("INSERT INTO hosts(name,last_seen) VALUES(?,?) ON CONFLICT(name) DO UPDATE SET last_seen=excluded.last_seen",
@@ -470,16 +508,16 @@ def daemon_hb(d):
             keep.add(sid)
             run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created,source,origin_host)
                    VALUES(?,?,?,?,?,'1',?,'local',?)
-                   ON CONFLICT(id) DO UPDATE SET name=excluded.name, summary=excluded.summary,
-                                                 when_to_use=excluded.when_to_use,
-                                                 source='local', origin_host=excluded.origin_host""",
+                   ON CONFLICT(id, origin_host) DO UPDATE SET name=excluded.name,
+                     summary=excluded.summary, when_to_use=excluded.when_to_use, source='local'""",
                 (sid, (sk.get("name") or sid)[:80], (sk.get("summary") or "")[:300],
                  (sk.get("when_to_use") or "")[:300], "", now(), host_))
             changed += 1
         for r in rows("SELECT id FROM skills WHERE source='local' AND origin_host=?", (host_,)):
             if r["id"] not in keep:
-                run("DELETE FROM skills WHERE id=?", (r["id"],))
-                run("DELETE FROM agent_skills WHERE skill=?", (r["id"],))
+                run("DELETE FROM skills WHERE id=? AND origin_host=?", (r["id"], host_))
+                run("DELETE FROM agent_skills WHERE skill=? AND agent IN "
+                    "(SELECT id FROM agents WHERE host=?)", (r["id"], host_))
                 changed += 1
     inst = d.get("skill_installs")
     if inst is not None:
@@ -778,6 +816,19 @@ class Handler(BaseHTTPRequestHandler):
                 self.end_headers()
                 self.wfile.write(data)
                 return
+            if p == "/api/models":
+                if not self._authed():
+                    return
+                out = rows("""SELECT id,name,base_url,model_id,kind,created FROM models
+                              ORDER BY created""")
+                for m_ in out:
+                    m_["sk_tail"] = ""
+                    r_ = one("SELECT api_key FROM models WHERE id=?", (m_["id"],))
+                    if r_ and r_.get("api_key"):
+                        m_["sk_tail"] = "…" + r_["api_key"][-4:]
+                    m_["agents"] = one("SELECT COUNT(*) n FROM agents WHERE model=? AND deleted=0",
+                                       (m_["id"],))["n"]
+                return self._json({"models": out})
             if p == "/api/skills":
                 if not self._authed():
                     return
@@ -812,9 +863,11 @@ class Handler(BaseHTTPRequestHandler):
                 if not daemon_ok(self):
                     return self._json({"error": "forbidden"}, 403)
                 mine = host_by_token(self) or ""
-                return self._json({"host": mine, "agents": rows(
-                    "SELECT id,name,cwd,prompt,model,always_on,managed_by FROM agents "
-                    "WHERE deleted=0 AND host=? ORDER BY sort,id", (mine,)),
+                ags_ = rows("SELECT id,name,cwd,prompt,model,always_on,managed_by FROM agents "
+                            "WHERE deleted=0 AND host=? ORDER BY sort,id", (mine,))
+                for a_ in ags_:
+                    a_["model_cfg"] = model_cfg_for(a_.get("model"))
+                return self._json({"host": mine, "agents": ags_,
                     "ops": rows("SELECT id,agent,op,path FROM daemon_ops "
                                 "WHERE done=0 AND (host IS NULL OR host='' OR host=?) ORDER BY id",
                                 (mine,))})
@@ -1080,6 +1133,60 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/agents/archived":
                 return self._json({"agents": rows(
                     "SELECT id,name,host,monogram FROM agents WHERE deleted=1 ORDER BY sort,id")})
+            if p == "/api/model/save":
+                d = self._body()
+                name = (d.get("name") or "").strip()
+                base = (d.get("base_url") or "").strip().rstrip("/")
+                mid = (d.get("model_id") or "").strip()
+                if not name or not base or not mid:
+                    raise Api(400, "名字、base url、模型名都要填")
+                kind = "kimi" if (d.get("kind") or "") == "kimi" else "openai"
+                def _slug(v):
+                    return re.sub(r"-+", "-", re.sub(r"[^a-z0-9_-]", "-", (v or "").lower())).strip("-")
+                slug = (d.get("id") or "").strip() or _slug(mid) or _slug(name) or ("m%d" % int(now()))
+                slug = slug[:40]
+                old = one("SELECT api_key FROM models WHERE id=?", (slug,))
+                sk = (d.get("sk") or "").strip()
+                if not sk and old:
+                    sk = old.get("api_key") or ""
+                if not sk:
+                    raise Api(400, "要填 sk")
+                try:
+                    mctx = int(d.get("max_context") or 0) or 131072
+                except (TypeError, ValueError):
+                    mctx = 131072
+                run("""INSERT INTO models(id,name,base_url,model_id,api_key,kind,max_context,created)
+                       VALUES(?,?,?,?,?,?,?,?)
+                       ON CONFLICT(id) DO UPDATE SET name=excluded.name, base_url=excluded.base_url,
+                         model_id=excluded.model_id, api_key=excluded.api_key,
+                         kind=excluded.kind, max_context=excluded.max_context""",
+                    (slug, name, base, mid, sk, kind, mctx, now()))
+                bump()
+                return self._json({"ok": True, "id": slug})
+            if p == "/api/model/delete":
+                d = self._body()
+                mid_ = d.get("id") or ""
+                n_ = one("SELECT COUNT(*) n FROM agents WHERE model=? AND deleted=0", (mid_,))["n"]
+                if n_:
+                    raise Api(400, "还有 %d 个 agent 在用这个模型" % n_)
+                run("DELETE FROM models WHERE id=?", (mid_,))
+                bump()
+                return self._json({"ok": True})
+            if p == "/api/agent/model":
+                d = self._body()
+                aid_, mid_ = d.get("agent") or "", d.get("model") or ""
+                ag_ = one("SELECT id,host FROM agents WHERE id=? AND deleted=0", (aid_,))
+                if not ag_:
+                    raise Api(404, "没有这个 agent")
+                if mid_ and not one("SELECT id FROM models WHERE id=?", (mid_,)):
+                    raise Api(404, "没有这个模型")
+                if one("SELECT id FROM jobs WHERE agent=? AND status IN('queued','running')", (aid_,)):
+                    raise Api(409, "这个 agent 正在跑任务，等它跑完再切换模型")
+                run("UPDATE agents SET model=? WHERE id=?", (mid_, aid_))
+                run("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
+                    (aid_, "restart", "", now(), ag_.get("host") or ""))
+                bump()
+                return self._json({"ok": True})
             if p == "/api/agent/create":
                 d = self._body()
                 name = (d.get("name") or "").strip()
@@ -1092,10 +1199,13 @@ class Handler(BaseHTTPRequestHandler):
                     raise Api(409, "这个 id 已经存在")
                 cwd = (d.get("cwd") or "").strip()   # 留空由 Daemon 按本机规则落盘
                 sort = (one("SELECT COALESCE(MAX(sort),0)+1 n FROM agents") or {}).get("n", 9)
+                mid_ = (d.get("model") or "").strip()
+                if mid_ and not one("SELECT id FROM models WHERE id=?", (mid_,)):
+                    raise Api(400, "没有这个模型")
                 run("""INSERT INTO agents(id,name,host,monogram,cwd,model,prompt,sort,always_on)
                        VALUES(?,?,?,?,?,?,?,?,?)""",
                     (aid, name, d.get("host") or "未指定主机", name[0], cwd,
-                     d.get("model") or "", d.get("prompt") or "",
+                     mid_, d.get("prompt") or "",
                      sort, 1 if d.get("always_on") else 0))
                 bump(); return self._json({"ok": True, "agent": aid})
             if p == "/api/agent/restore":
@@ -1181,11 +1291,16 @@ class Handler(BaseHTTPRequestHandler):
             if p == "/api/skill/op":
                 d = self._body()
                 op, agent_, sid = d.get("op"), d.get("agent") or "", d.get("skill") or ""
-                sk = one("SELECT id,origin_host FROM skills WHERE id=?", (sid,))
+                ag0 = one("SELECT host FROM agents WHERE id=? AND deleted=0", (agent_,)) if agent_ else None
+                host0 = (ag0 or {}).get("host", "")
+                sk = one("SELECT id,origin_host FROM skills WHERE id=? AND origin_host=?", (sid, host0)) \
+                     if host0 else one("SELECT id,origin_host FROM skills WHERE id=?", (sid,))
                 if not sk:
                     raise Api(404, "没有这个技能")
                 if op == "delete":
-                    n = one("SELECT COUNT(*) n FROM agent_skills WHERE skill=? AND enabled=1", (sid,))["n"]
+                    n = one("""SELECT COUNT(*) n FROM agent_skills s JOIN agents a ON a.id=s.agent
+                               WHERE s.skill=? AND s.enabled=1 AND a.host=?""",
+                            (sid, sk.get("origin_host") or ""))["n"]
                     if n:
                         raise Api(400, "还有 %d 个 agent 装着它，先卸载完再删" % n)
                     run("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
@@ -1219,13 +1334,15 @@ class Handler(BaseHTTPRequestHandler):
                 d = self._body()
                 sk = d.get("skill", "")
                 row_ = one("SELECT source,origin_host FROM skills WHERE id=?", (sk,))
+                sk_host = (row_ or {}).get("origin_host") or ""
                 if row_ and (row_.get("source") or "hub") == "local":
                     host = row_.get("origin_host") or "某台机器"
                     raise Api(400, "这个技能是从「%s」的磁盘同步来的，在中枢删除会被重新同步。"
                                    "要彻底删，请到那台机器的 ~/.kimi-code/skills/ 删掉对应目录；"
                                    "只想让这个 agent 不用它，点「停用」即可。" % host)
-                run("DELETE FROM skills WHERE id=?", (sk,))
-                run("DELETE FROM agent_skills WHERE skill=?", (sk,))
+                run("DELETE FROM skills WHERE id=? AND origin_host=?", (sk, sk_host))
+                run("DELETE FROM agent_skills WHERE skill=? AND agent IN "
+                    "(SELECT id FROM agents WHERE host=?)", (sk, sk_host))
                 bump()
                 return self._json({"ok": True})
             if p == "/api/file/delete":
