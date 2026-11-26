@@ -1363,6 +1363,17 @@ class Handler(BaseHTTPRequestHandler):
                     raise Api(409, "这台主机上还有 %d 个 agent" % n)
                 run("DELETE FROM hosts WHERE name=?", (name,))
                 return self._json({"ok": True})
+            if p == "/api/host/reload":
+                # 让节点自己重载：相当于远程 systemctl restart，给没有 SSH 的机器（Windows）用
+                d = self._body()
+                name = (d.get("name") or "").strip()
+                targets = [name] if name else [h_["name"] for h_ in rows("SELECT name FROM hosts")]
+                if name and name not in targets:
+                    raise Api(404, "没有这台主机")
+                for t_ in targets:
+                    run("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES('','reload_self','',?,?)",
+                        (now(), t_))
+                return self._json({"ok": True, "hosts": targets})
             if p == "/api/events":
                 if not self._authed():
                     return

@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112702   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112704   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
@@ -911,6 +911,25 @@ def refresh_agents():
             migrate_user_skills()
             for op in d.get("ops", []):
                 try:
+                    # 中枢让它重载：先把这条 op 标掉（否则新进程会再看到），杀掉所有会话，换新进程
+                    if op.get("op") == "reload_self":
+                        with LOCK:
+                            idle = not ACTIVE
+                        if not idle:
+                            continue        # 有任务在跑：op 保持未完成，下一轮再来
+                        http("/api/daemon/op_done", {"id": op["id"]}, timeout=15)
+                        with LOCK:
+                            insts = list(PROCS.values())
+                            PROCS.clear()
+                        for i_ in insts:
+                            try:
+                                i_.kill()
+                            except Exception:
+                                pass
+                        sys.stderr.write("reload_self: 重启自己\n")
+                        sys.stderr.flush()
+                        os.execv(sys.executable, [sys.executable, os.path.abspath(__file__)] + sys.argv[1:])
+                        continue
                     # 正在跑任务的 agent 不打断：把重启/清理类操作推迟到它空闲
                     if op.get("agent"):
                         with LOCK:
