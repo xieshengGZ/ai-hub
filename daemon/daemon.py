@@ -4,7 +4,7 @@
 向 Hub 长轮询领任务；为每个 agent 拉起一个 `kimi acp` 子进程；流式回传；本地记账；
 心跳；产出扫描与上传。不保存任何模型密钥。
 """
-import hashlib, json, mimetypes, os, queue, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request
+import hashlib, json, mimetypes, os, queue, re, shutil, socket, subprocess, sys, threading, time, urllib.parse, urllib.request
 
 CONF = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), encoding="utf-8"))
 HUB = CONF["hub"].rstrip("/")
@@ -28,6 +28,7 @@ if sys.stderr is None or sys.stdout is None:
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
 RUNNING_JOBS = set()
+LOCK_SOCK = None
 KIMI_CONF = (CONF.get("kimi") or "").strip()
 
 
@@ -407,6 +408,7 @@ def acp_for(agent):
             a = Acp(agent)
             PROCS[agent["id"]] = a
         else:
+            agent["cwd"] = resolve_cwd(agent)
             a.agent = agent          # 每次任务刷新配置（提示词、技能）
         return a
 
@@ -465,6 +467,7 @@ def run_job(job, agent, files):
 
 
 def _run_job(job, agent, files):
+    agent["cwd"] = resolve_cwd(agent)   # Hub 上 cwd 留空时按 id 落盘，不能带着空串往下走
     jid, cwd, started = job["id"], agent["cwd"], time.time()
     with LOCK:
         if jid in RUNNING_JOBS:
@@ -559,9 +562,13 @@ def _run_job(job, agent, files):
             stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"],
                                lambda: state.__setitem__("last_text", time.time()))
         except RuntimeError as e:
-            # CLI 侧会话被上一轮卡住（turn.agent_busy）：杀掉实例、丢掉旧 session，重开一次
-            if "agent_busy" in str(e) or "already in progress" in str(e):
-                sys.stderr.write("session busy, restarting instance for %s\n" % agent["id"])
+            # CLI 侧会话被上一轮卡住（turn.agent_busy）或会话被别的进程改过（session.stale）：
+            # 杀掉实例、丢掉旧 session，重开一次
+            msg_ = str(e)
+            if ("agent_busy" in msg_ or "already in progress" in msg_
+                    or "session.stale" in msg_ or "updated by another client" in msg_):
+                sys.stderr.write("session unusable (%s), restarting instance for %s\n"
+                                 % (msg_[:40], agent["id"]))
                 a.kill()
                 a.sid = ""
                 try:
@@ -1041,6 +1048,18 @@ def cli_send(agent, argv):
 
 
 def main():
+    # 一台机器只允许一个 daemon：重复实例会各自拉起 acp，会话互相踩，报 session.stale。
+    # 用本地端口占位当锁，进程退出即释放。
+    global LOCK_SOCK
+    try:
+        s_ = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s_.bind(("127.0.0.1", 38017))
+        s_.listen(1)
+        LOCK_SOCK = s_
+    except OSError:
+        sys.stderr.write("已经有一个 daemon 在跑（127.0.0.1:38017 被占用），本进程退出\n")
+        sys.stderr.flush()
+        sys.exit(0)
     migrate_user_skills(force=True)
     print("daemon -> %s" % HUB, flush=True)
     try:
