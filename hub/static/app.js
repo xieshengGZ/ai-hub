@@ -1429,7 +1429,7 @@ function openSheet(k){
 }
 function closeSheet(fromHistory){
   $('mask').classList.remove('on');
-  ['m','o','a','art','t','team','arch','g','s','host','sk'].forEach(k => { const el = $('sheet-'+k); if(el) el.classList.remove('on'); });
+  document.querySelectorAll('.sheet').forEach(el => el.classList.remove('on'));
   syncTabIndex(SCREEN);
   if(!fromHistory && history.state && history.state.sheet){
     SHEET_CLOSING = true;
