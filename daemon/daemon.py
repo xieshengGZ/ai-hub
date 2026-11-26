@@ -4,7 +4,7 @@
 向 Hub 长轮询领任务；为每个 agent 拉起一个 `kimi acp` 子进程；流式回传；本地记账；
 心跳；产出扫描与上传。不保存任何模型密钥。
 """
-import hashlib, json, mimetypes, os, queue, re, shutil, subprocess, sys, threading, time, urllib.request
+import hashlib, json, mimetypes, os, queue, re, shutil, subprocess, sys, threading, time, urllib.parse, urllib.request
 
 CONF = json.load(open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "config.json"), encoding="utf-8"))
 HUB = CONF["hub"].rstrip("/")
@@ -47,6 +47,16 @@ def kimi_argv():
     return [exe]
 
 
+def py_exe():
+    """daemon 自己在用的解释器；Windows 上 pythonw 没控制台，优先换成 python。"""
+    exe = sys.executable or "python"
+    if os.name == "nt" and exe.lower().endswith("pythonw.exe"):
+        cand = exe[:-len("pythonw.exe")] + "python.exe"
+        if os.path.exists(cand):
+            return cand
+    return exe
+
+
 def http(path, data=None, headers=None, raw=False, timeout=60):
     body, h = None, {"X-Daemon": TOKEN}
     if headers:
@@ -64,9 +74,9 @@ def http(path, data=None, headers=None, raw=False, timeout=60):
 
 
 SEND_SH = r"""#!/usr/bin/env bash
-# 发文件：
-#   ./aihub-send.sh <文件>              发给用户（挂在这条回复下面）
-#   ./aihub-send.sh <文件> --to <agent>  投递给另一个 agent 的暂存区
+# 发文件（不依赖 python，一次 POST 完成）：
+#   ./aihub-send.sh <文件>                挂到当前回复下面给用户
+#   ./aihub-send.sh <文件> --to <agent>   投递到另一个 agent 的暂存区
 set -euo pipefail
 f=""; to=""
 while [ $# -gt 0 ]; do
@@ -75,41 +85,29 @@ while [ $# -gt 0 ]; do
     *) f="$1"; shift;;
   esac
 done
-[ -n "$f" ] || { echo "用法: ./aihub-send.sh <文件> [--to <agent>]"; exit 2; }
-[ -f "$f" ] || { echo "没有这个文件: $f"; exit 1; }
+if [ -z "$f" ] || [ ! -f "$f" ]; then echo "用法: ./aihub-send.sh <文件> [--to <agent>]"; exit 2; fi
 name=$(basename "$f")
 size=$(wc -c <"$f" | tr -d ' ')
-mime=$(file -b --mime-type "$f" 2>/dev/null || echo application/octet-stream)
-
-if [ -n "$to" ]; then
-  body=$(python3 - "$name" "$size" "$mime" "$to" <<'PYEOF'
-import json, os, sys
-name, size, mime, to = sys.argv[1:5]
-print(json.dumps({"from": os.environ.get("AIHUB_AGENT", ""), "to": to,
-                  "name": name, "size": int(size), "mime": mime}, ensure_ascii=False))
-PYEOF
-)
-  resp=$(curl -fsS -X POST "$AIHUB_HUB/api/daemon/file_send" -H "X-Daemon: $AIHUB_TOKEN" \
-          -H 'Content-Type: application/json' --data "$body")
-else
-  body=$(python3 - "$name" "$size" "$f" "$mime" <<'PYEOF'
-import json, os, sys
-name, size, path, mime = sys.argv[1:5]
-print(json.dumps({"agent": os.environ.get("AIHUB_AGENT", ""), "name": name,
-                  "size": int(size), "path": path, "mime": mime, "latest": True},
-                 ensure_ascii=False))
-PYEOF
-)
-  resp=$(curl -fsS -X POST "$AIHUB_HUB/api/daemon/artifact" -H "X-Daemon: $AIHUB_TOKEN" \
-          -H 'Content-Type: application/json' --data "$body")
-fi
-
-fid=$(printf '%s' "$resp" | sed -E 's/.*"id" *: *"([0-9a-f]+)".*/\1/')
-[ -n "$fid" ] || { echo "上传失败: $resp"; exit 1; }
-curl -fsS -X POST "$AIHUB_HUB/api/daemon/upload" -H "X-Daemon: $AIHUB_TOKEN" \
-     -H "X-File-Id: $fid" --data-binary @"$f" >/dev/null
+enc=$(printf '%s' "$name" | od -An -tx1 | tr -d ' \n' | sed 's/../%&/g')
+resp=$(curl -fsS -X POST "$AIHUB_HUB/api/daemon/send_file" \
+  -H "X-Daemon: $AIHUB_TOKEN" \
+  -H "X-Filename: $enc" \
+  -H "X-From: $AIHUB_AGENT" \
+  -H "X-To: $to" \
+  -H "Content-Type: application/octet-stream" \
+  --data-binary @"$f")
+case "$resp" in
+  *'"ok": true'*|*'"ok":true'*) ;;
+  *) echo "上传失败: $resp"; exit 1;;
+esac
 printf '%s/%s\n' "$(cd "$(dirname "$f")" && pwd)" "$name" >> "$(dirname "$0")/.aihub-sent" 2>/dev/null || true
 if [ -n "$to" ]; then echo "已投递给 $to：$name（$size 字节）"; else echo "已发送给用户：$name（$size 字节）"; fi
+"""
+
+# Windows 版走 daemon 自己的解释器，避免 cmd 的代码页把中文文件名搞乱。
+SEND_CMD = r"""@echo off
+setlocal
+"@PY@" "@DAEMON@" send @AGENT@ %*
 """
 
 
@@ -132,20 +130,26 @@ class Acp:
         os.makedirs(cwd, exist_ok=True)
         lines = ["# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", "")),
                  "\n## 给用户发文件\n\n需要把文件交给用户时，在本目录执行：\n\n"
-                 "    ./aihub-send.sh <文件路径>\n\n"
+                 "    ./aihub-send.sh <文件路径>        （bash / Git Bash）\n"
+                 "    aihub-send.cmd <文件路径>        （cmd / PowerShell）\n\n"
                  "它会把文件上传到中枢并挂在你这条回复下面，用户能直接下载。\n"
                  "要发给另一个 agent，加 `--to <agent_id>`，文件会进入对方的暂存区，\n"
                  "对方下一轮对话会自动收到。\n"
                  "不要让用户自己拖拽或手动上传。\n"]
         with open(os.path.join(cwd, "AGENTS.md"), "w", encoding="utf-8") as f:
             f.write("".join(lines))
-        send_sh = os.path.join(cwd, "aihub-send.sh")
         try:
+            send_sh = os.path.join(cwd, "aihub-send.sh")
             with open(send_sh, "w", encoding="utf-8", newline="\n") as f:
                 f.write(SEND_SH)
             os.chmod(send_sh, 0o755)
+            send_cmd = os.path.join(cwd, "aihub-send.cmd")
+            with open(send_cmd, "w", encoding="ascii", newline="\r\n") as f:
+                f.write(SEND_CMD.replace("@PY@", py_exe())
+                        .replace("@DAEMON@", os.path.abspath(__file__))
+                        .replace("@AGENT@", self.agent["id"]))
         except OSError as e:
-            sys.stderr.write("write aihub-send.sh failed: %r\n" % e)
+            sys.stderr.write("write aihub-send failed: %r\n" % e)
 
     def _ensure_model_home(self):
         """选了中枢模型：写 <cwd>/.kimi-home 并用它；没选：沿用机器默认配置。"""
@@ -420,7 +424,7 @@ def fetch_file(fid, name, cwd):
 def scan_artifacts(cwd, since):
     skip = {".git", "node_modules", "__pycache__", ".kimi", ".kimi-code",
             ".kimi-home", ".aihub-inbox"}
-    skip_files = {"AGENTS.md", ".DS_Store", "aihub-send.sh", ".aihub-sent"}
+    skip_files = {"AGENTS.md", ".DS_Store", "aihub-send.sh", "aihub-send.cmd", ".aihub-sent"}
     sent = set()
     try:
         with open(os.path.join(cwd, ".aihub-sent"), encoding="utf-8") as f:
@@ -987,6 +991,55 @@ def refresh_agents():
         time.sleep(10)
 
 
+def cli_send(agent, argv):
+    """给 agent 用的发文件入口：daemon.py send <agent> <文件> [--to <agent>]"""
+    f, to, i = "", "", 0
+    while i < len(argv):
+        a = argv[i]
+        if a == "--to" and i + 1 < len(argv):
+            to = argv[i + 1]
+            i += 2
+            continue
+        if not f:
+            f = a
+        i += 1
+    if not f or not os.path.isfile(f):
+        print("用法: aihub-send <文件> [--to <agent>]")
+        return 2
+    name = os.path.basename(f)
+    try:
+        with open(f, "rb") as fh:
+            blob = fh.read()
+    except OSError as e:
+        print("读不了这个文件: %r" % e)
+        return 2
+    if not blob or len(blob) > 120 * 1024 * 1024:
+        print("文件为空或超过 120MB")
+        return 2
+    try:
+        r = http("/api/daemon/send_file", blob, headers={
+            "X-Filename": urllib.parse.quote(name),
+            "X-From": agent, "X-To": to,
+            "Content-Type": "application/octet-stream"}, raw=True, timeout=300)
+        res = json.loads(r.decode("utf-8", "replace") or "{}")
+    except Exception as e:
+        print("上传失败: %r" % e)
+        return 1
+    if not res.get("ok"):
+        print("上传失败: %s" % (res.get("error") or r[:200]))
+        return 1
+    try:
+        with open(os.path.join(os.getcwd(), ".aihub-sent"), "a", encoding="utf-8") as fh:
+            fh.write(os.path.abspath(f) + "\n")
+    except OSError:
+        pass
+    if to:
+        print("已投递给 %s：%s（%d 字节）" % (to, name, len(blob)))
+    else:
+        print("已发送给用户：%s（%d 字节）" % (name, len(blob)))
+    return 0
+
+
 def main():
     migrate_user_skills(force=True)
     print("daemon -> %s" % HUB, flush=True)
@@ -1021,5 +1074,7 @@ def main():
 
 
 if __name__ == "__main__":
+    if len(sys.argv) >= 3 and sys.argv[1] == "send":
+        sys.exit(cli_send(sys.argv[2], sys.argv[3:]))
     main()
 

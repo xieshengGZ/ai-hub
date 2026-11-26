@@ -301,9 +301,19 @@ def session_ok(sid):
     return True
 
 
+def login_lock_limit():
+    try:
+        return int(CONF.get("login_limit", 10))
+    except (TypeError, ValueError):
+        return 10
+
+
 def login_locked(ip):
+    limit = login_lock_limit()
+    if limit <= 0:          # 0 = 暂时关闭限流
+        return False
     n = one("SELECT COUNT(*) n FROM login_attempts WHERE ip=? AND ts>?", (ip, now() - 600))["n"]
-    return n >= 10
+    return n >= limit
 
 
 def login_fail(ip):
@@ -1226,6 +1236,52 @@ class Handler(BaseHTTPRequestHandler):
                         (a["id"], "restart", "", now(), host_))
                 bump()
                 return self._json({"ok": True, "model": slug})
+            if p == "/api/daemon/send_file":
+                # 一次 POST 完成：文件在新 body，元信息在头里。给节点脚本用，不依赖 python。
+                if not daemon_ok(self):
+                    return self._json({"error": "forbidden"}, 403)
+                raw = self.headers.get("X-Filename") or "file"
+                name = __import__("urllib.parse").parse.unquote(raw)
+                try:
+                    name = name.encode("latin-1").decode("utf-8")
+                except (UnicodeEncodeError, UnicodeDecodeError):
+                    pass
+                name = re.sub(r"[\\/\x00-\x1f]", "_", name)[:120]
+                to_ = (self.headers.get("X-To") or "").strip()
+                sender = (self.headers.get("X-From") or "").strip()
+                n = int(self.headers.get("Content-Length") or 0)
+                if n <= 0 or n > 120 * 1024 * 1024:
+                    raise Api(400, "文件为空或超过 120MB")
+                if to_:
+                    if not one("SELECT id FROM agents WHERE id=? AND deleted=0", (to_,)):
+                        raise Api(404, "目标 agent 不存在")
+                fid = uuid.uuid4().hex[:12]
+                os.makedirs(FILES, exist_ok=True)
+                stored = os.path.join(FILES, fid)
+                left = n
+                with open(stored, "wb") as fh:
+                    while left > 0:
+                        b = self.rfile.read(min(left, 1 << 20))
+                        if not b:
+                            break
+                        fh.write(b)
+                        left -= len(b)
+                size = os.path.getsize(stored)
+                mime = mimetypes.guess_type(name)[0] or "application/octet-stream"
+                if to_:
+                    run("""INSERT INTO files(id,name,size,mime,agent,kind,path,ts,msg,stored)
+                           VALUES(?,?,?,?,?,'in',?,?,NULL,?)""",
+                        (fid, name, size, mime, to_, "", now(), stored))
+                else:
+                    m = one("""SELECT id FROM messages WHERE agent=? AND role='agent'
+                               ORDER BY id DESC LIMIT 1""", (sender,))
+                    run("""INSERT INTO files(id,name,size,mime,agent,kind,path,ts,msg,stored)
+                           VALUES(?,?,?,?,?,'out',?,?,?,?)""",
+                        (fid, name, size, mime, sender, "", now(),
+                         (m or {}).get("id"), stored))
+                bump()
+                return self._json({"ok": True, "id": fid, "name": name, "size": size,
+                                   "to": to_, "from": sender})
             if p == "/api/daemon/file_send":
                 if not daemon_ok(self):
                     return self._json({"error": "forbidden"}, 403)
