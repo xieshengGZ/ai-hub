@@ -116,10 +116,8 @@
     <button class="item" onclick="openModelPick()"><span class="nm">模型</span><span class="r" id="curModelLabel">—</span></button>
     <button class="item" onclick="toggleAlways()"><span class="nm">常驻运行</span><span class="r" id="alwaysLabel">—</span></button>
     <button class="item" onclick="openSheet('o')"><span class="nm">输出方式</span><span class="r cur" id="modeLabel">完整</span></button>
-    <button class="item" onclick="openSheet('t')"><span class="nm">任务</span><span class="r" id="taskCount"></span></button>
     <button class="item" onclick="openSheet('team')"><span class="nm">团队</span><span class="r" id="teamCount"></span></button>
     <button class="item" onclick="openSheet('sk')"><span class="nm">技能</span><span class="r" id="skillCount"></span></button>
-    <button class="item" onclick="openSheet('art')"><span class="nm">文件（产出）</span><span class="r" id="artCount"></span></button>
     <button class="item" onclick="cancelJob()"><span class="nm">中止当前任务</span><span class="r" id="jobLabel">—</span></button>
     <button class="item" onclick="deleteAgent()"><span class="nm" style="color:#A33A2B">删除这个 agent</span></button>
     <div class="hint" id="verLine" style="text-align:center;opacity:.7"></div>
@@ -267,22 +265,8 @@
     <div id="teamList"></div>
   </div>
 
-  <!-- 任务 -->
-  <div class="sheet" id="sheet-t">
-    <div class="grab"></div>
-    <div class="sh"><b>任务</b><button class="x" onclick="closeSheet()"><svg width="20" height="20"><use href="#i-close"/></svg></button></div>
-    <div class="hint">最近 40 条。点一条跳到对应会话。</div>
-    <div id="taskList"></div>
-  </div>
 
-  <!-- 产出 -->
-  <div class="sheet" id="sheet-art">
-    <div class="grab"></div>
-    <div class="sh"><b>产出</b><button class="x" onclick="closeSheet()"><svg width="20" height="20"><use href="#i-close"/></svg></button></div>
-    <div class="hint">文件留在生成它的机器上；小文件（≤5 MB）会自动传一份到这里，点开即可下载。</div>
-    <div id="artList"></div>
-  </div>
 </div>
-<script src="app.js?v=81"></script>
+<script src="app.js?v=82"></script>
 </body>
 </html>

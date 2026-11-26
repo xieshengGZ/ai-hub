@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112701   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112702   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
@@ -132,13 +132,15 @@ class Acp:
         cwd = self.agent["cwd"]
         os.makedirs(cwd, exist_ok=True)
         lines = ["# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", "")),
-                 "\n## 给用户发文件\n\n需要把文件交给用户时，在本目录执行：\n\n"
-                 "    ./aihub-send.sh <文件路径>        （bash / Git Bash）\n"
-                 "    aihub-send.cmd <文件路径>        （cmd / PowerShell）\n\n"
-                 "它会把文件上传到中枢并挂在你这条回复下面，用户能直接下载。\n"
-                 "要发给另一个 agent，加 `--to <agent_id>`，文件会进入对方的暂存区，\n"
-                 "对方下一轮对话会自动收到。\n"
-                 "不要让用户自己拖拽或手动上传。\n"]
+                 "\n## 给用户发文件\n\n**系统不会自动回收工作目录里的文件**，只有你显式执行脚本，\n"
+                 "文件才会出现在聊天里。所以：\n\n"
+                 "- 用户明确要文件（「把这个发给我」「把结果发我」）→ 在本目录执行：\n\n"
+                 "      ./aihub-send.sh <文件路径>        （bash / Git Bash）\n"
+                 "      aihub-send.cmd <文件路径>        （cmd / PowerShell）\n\n"
+                 "- 用户没提，就只回文字，不要主动上传。\n"
+                 "- 脚本会把文件挂在你这条回复下面，用户能直接下载；\n"
+                 "  要发给另一个 agent，加 `--to <agent_id>`，文件进对方暂存区。\n"
+                 "\n"]
         with open(os.path.join(cwd, "AGENTS.md"), "w", encoding="utf-8") as f:
             f.write("".join(lines))
         try:
@@ -425,72 +427,6 @@ def fetch_file(fid, name, cwd):
     return os.path.relpath(dst, cwd)
 
 
-# 浏览器、编辑器这些工具会在工作目录里留一堆缓存，不能当产出传给用户
-SKIP_DIRS = {
-    ".git", "node_modules", "__pycache__", ".kimi", ".kimi-code", ".kimi-home",
-    ".aihub-inbox", ".cache", "temp", "tmp",
-    # Chromium 用户数据目录
-    "profile", "User Data", "Cache", "Cache_Data", "Code Cache", "GPUCache",
-    "DawnGraphiteCache", "DawnWebGPUCache", "GrShaderCache", "ShaderCache",
-    "Network", "WebStorage", "Local Storage", "Session Storage", "Service Worker",
-    "IndexedDB", "databases", "blob_storage", "segmentation_platform",
-    "Crashpad", "Application Cache", "Media Cache", "component_crx_cache",
-    "extensions_crx_cache", "Safe Browsing", "optimization_guide_model_store",
-}
-SKIP_FILE_RE = re.compile(r"""^(
-    data_\d+ | f_\d{6,} | \..* |
-    Cookies.* | History.* | Favicons | QuotaManager | DIPS.* | ukm_db.* |
-    Preferences | Local\ State | CURRENT | CURRENT-.* | MANIFEST-.* |
-    .*\.(wal|lock|log|tmp|bak|index|ldb|sst)$
-)$""", re.X)
-
-
-def load_ignore(cwd):
-    """<cwd>/.aihub-ignore：每行一条 glob（相对路径），命中就不当产出。"""
-    pats = []
-    try:
-        with open(os.path.join(cwd, ".aihub-ignore"), encoding="utf-8") as f:
-            for ln in f:
-                ln = ln.strip()
-                if ln and not ln.startswith("#"):
-                    pats.append(ln)
-    except OSError:
-        pass
-    return pats
-
-
-def scan_artifacts(cwd, since):
-    skip_files = {"AGENTS.md", ".DS_Store", "aihub-send.sh", "aihub-send.cmd", ".aihub-sent"}
-    sent = set()
-    try:
-        with open(os.path.join(cwd, ".aihub-sent"), encoding="utf-8") as f:
-            sent = {ln.strip() for ln in f if ln.strip()}
-    except OSError:
-        pass
-    ign = load_ignore(cwd)
-    out = []
-    for root, dirs, files in os.walk(cwd):
-        # 所有点开头的目录（.kimi-home / .git / .aihub-inbox …）都不是产出
-        dirs[:] = [d for d in dirs if d not in SKIP_DIRS and not d.startswith(".")]
-        for fn in files:
-            if fn in skip_files or SKIP_FILE_RE.match(fn):
-                continue
-            p = os.path.join(root, fn)
-            rel = os.path.relpath(p, cwd).replace(os.sep, "/")
-            if any(fnmatch.fnmatch(rel, pat) or fnmatch.fnmatch(fn, pat) for pat in ign):
-                continue
-            try:
-                st = os.stat(p)
-            except OSError:
-                continue
-            if p in sent:
-                continue
-            if st.st_mtime >= since and 0 < st.st_size <= 40 * 1024 * 1024:
-                out.append((p, st.st_size, st.st_mtime))
-    out.sort(key=lambda x: -x[2])
-    return out[:20]
-
-
 def run_job(job, agent, files):
     try:
         return _run_job(job, agent, files)
@@ -626,19 +562,6 @@ def _run_job(job, agent, files):
         sys.stderr.write("job failed: %r\n" % e)
         push(force=True)
         http("/api/daemon/event", {"job": jid, "kind": "error", "error": str(e)[:300]}, timeout=30)
-
-    for p, size, _ in scan_artifacts(cwd, started):
-        try:
-            r = http("/api/daemon/artifact", {"agent": agent["id"], "name": os.path.basename(p),
-                                              "size": size, "path": p, "job": jid,
-                                              "mime": mimetypes.guess_type(p)[0] or ""}, timeout=30)
-            if size <= 5 * 1024 * 1024:
-                with open(p, "rb") as f:
-                    http("/api/daemon/upload", f.read(),
-                         headers={"X-File-Id": r["id"], "Content-Type": "application/octet-stream"},
-                         raw=True, timeout=120)
-        except Exception as e:
-            sys.stderr.write("artifact failed: %r\n" % e)
 
     with LOCK:
         RUNNING_JOBS.discard(jid)

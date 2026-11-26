@@ -1396,52 +1396,6 @@ async function deleteAgent(){
   }catch(e){ toast('删除失败：' + e.message); }
 }
 
-function openFile(id, stored){
-  if(!stored){ toast('文件在生成它的机器上（超过 5 MB），暂未回传'); return; }
-  window.open('api/file?id=' + encodeURIComponent(id), '_blank');
-}
-
-/* ---------- 任务 ---------- */
-async function loadTasks(){
-  if(!CUR){ $('taskList').innerHTML = '<div class="hint">先打开一个会话。</div>'; return; }
-  const d = await api('api/tasks?agent=' + encodeURIComponent(CUR.id));
-  const ts = d.tasks || [];
-  const running = ts.filter(t => t.status === 'running' || t.status === 'queued').length;
-  $('taskCount').textContent = running ? running + ' 个在跑' : '';
-  $('taskList').innerHTML = ts.length ? ts.map(t => {
-    const dur = t.ended && t.started ? Math.round(t.ended - t.started) + 's' : (t.started ? '进行中' : '排队');
-    const label = {done:'完成', error:'失败', canceled:'已中止', running:'运行中', queued:'排队'}[t.status] || t.status;
-    const retry = (t.status === 'error' || t.status === 'canceled')
-      ? `<span class="r" style="color:#0F5B63;margin-left:10px" onclick="event.stopPropagation();retryTask('${t.id}')">重跑</span>` : '';
-    return `<button class="item" onclick="jump('${t.agent}')">
-      <span class="nm">${esc(t.agent_name||t.agent)} · ${esc((t.reply||'').replace(/\n/g,' ').slice(0,26))}</span>
-      ${retry}<span class="r">${label} · ${dur}</span></button>`;
-  }).join('') : '<div class="hint">还没有任务。</div>';
-}
-
-function jump(id){ closeSheet(); openAgent(id); }
-
-async function retryTask(job){
-  try{
-    await api('api/task/retry', {method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({job})});
-    toast('已重新派发'); await loadTasks(); if(CUR) followUp();
-  }catch(e){ toast('重跑失败：' + e.message); }
-}
-
-/* ---------- 产出 ---------- */
-async function loadArtifacts(){
-  if(!CUR){ $('artList').innerHTML = '<div class="hint">先打开一个会话。</div>'; return; }
-  const d = await api(`api/artifacts?agent=${encodeURIComponent(CUR.id)}`);
-  const fs = d.files || [];
-  $('artCount').textContent = fs.length ? fs.length + ' 个' : '';
-  $('artList').innerHTML = fs.length ? fs.map(f => {
-    const ok = !!f.stored;
-    return `<button class="item" onclick="openFile('${f.id}', ${ok})"><span class="nm">${esc(f.name)}</span>
-      <span class="r">${hhmm(f.ts)}${ok ? '' : ' · 在机器上'}</span></button>`;
-  }).join('') : '<div class="hint">这个 agent 还没有产出。</div>';
-}
-
 /* ---------- 抽屉 ---------- */
 function paintAgentInfo(){
   if(!CUR) { $('mInfo').innerHTML = ''; return; }
@@ -1493,8 +1447,6 @@ function openSheet(k){
   if(el) el.classList.add('on');
   syncTabIndex(SCREEN);
   try{ history.pushState({sheet: k}, '', location.pathname + location.hash); }catch(e){}
-  if(k === 'art') loadArtifacts();
-  if(k === 't') loadTasks();
   if(k === 'arch') loadArchived();
   if(k === 'host') loadHosts();
   if(k === 'sk') loadSkills();
@@ -1502,7 +1454,7 @@ function openSheet(k){
   if(k === 's'){ setTimeout(()=>$('qInput').focus(), 150); }
   if(k === 'team'){ loadTeam(); $('teamCount').textContent = (CUR && CUR.team) ? CUR.team + ' 个' : ''; }
   if(k === 'a') loadStaged();
-  if(k === 'm'){ renderJobLine(); paintAlways(); paintAgentInfo(); paintCurModel(); loadArtifacts(); }
+  if(k === 'm'){ renderJobLine(); paintAlways(); paintAgentInfo(); paintCurModel(); }
 }
 function closeSheet(fromHistory){
   $('mask').classList.remove('on');
