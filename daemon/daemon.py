@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112723   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112724   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
@@ -35,6 +35,59 @@ KIMI_CONF = (CONF.get("kimi") or "").strip()
 
 
 AGENTS_ROOT = os.path.join(os.path.expanduser("~"), "aihub", "agents")
+
+
+def _is_link(p):
+    if os.path.islink(p):
+        return True
+    try:
+        return os.path.isdir(p) and bool(getattr(os.stat(p), "st_ino", 0)) and _link_target(p) is not None
+    except OSError:
+        return False
+
+
+def mirror_project_skills(cwd, skills_dir):
+    """kimi 的 acp 模式只认 <项目>/.agents/skills（--skills-dir 被忽略），
+    把会话已装的技能链接到那里，kimi 才看得见。"""
+    dst = os.path.join(cwd, ".agents", "skills")
+    try:
+        os.makedirs(dst, exist_ok=True)
+    except OSError as e:
+        sys.stderr.write("project skills mkdir failed: %r\n" % e)
+        return
+    want = {}
+    try:
+        names = os.listdir(skills_dir)
+    except OSError:
+        names = []
+    for n in names:
+        src = os.path.join(skills_dir, n)
+        if os.path.isdir(src):
+            want[n] = os.path.realpath(src)
+    for n, target in want.items():
+        p = os.path.join(dst, n)
+        cur = _link_target(p)
+        try:
+            if cur is not None:
+                abs_cur = cur if os.path.isabs(cur) else os.path.join(dst, cur)
+                if os.path.realpath(abs_cur) == target:
+                    continue
+                _unlink_dir(p)
+            elif os.path.exists(p):
+                continue
+            _link_dir(target, p)
+        except OSError as e:
+            sys.stderr.write("project skills link %s failed: %r\n" % (n, e))
+    for n in os.listdir(dst):
+        if n in want:
+            continue
+        p = os.path.join(dst, n)
+        if _link_target(p) is None:
+            continue
+        try:
+            _unlink_dir(p)
+        except OSError:
+            pass
 
 
 def skills_sig(skills_dir):
@@ -295,7 +348,9 @@ class Acp:
             sys.stderr.write("write aihub-send failed: %r\n" % e)
         try:
             home, _ = self._ensure_model_home()
-            sync_home_skills(home, os.path.join(self.state, "skills"))
+            sk_src = os.path.join(self.state, "skills")
+            sync_home_skills(home, sk_src)
+            mirror_project_skills(cwd, sk_src)
         except Exception as e:
             sys.stderr.write("skills mirror failed: %r\n" % e)
 
@@ -1032,6 +1087,8 @@ def adopt_agents_skills():
             continue
         for d in os.listdir(base):
             src = os.path.join(base, d)
+            if _link_target(src) is not None:
+                continue                 # 我们自己的链接，不是用户装的
             if not os.path.isfile(os.path.join(src, "SKILL.md")):
                 continue
             if d == "send-file":
