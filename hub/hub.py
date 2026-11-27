@@ -195,7 +195,7 @@ def init():
                 c.execute("ALTER TABLE skills ADD COLUMN %s" % col)
             except Exception:
                 pass
-        for col in ("token TEXT", "created REAL DEFAULT 0"):
+        for col in ("token TEXT", "created REAL DEFAULT 0", "itoken TEXT", "iexp REAL"):
             try:
                 c.execute("ALTER TABLE hosts ADD COLUMN %s" % col)
             except Exception:
@@ -394,6 +394,29 @@ class Api(Exception):
 
 
 # ---------------- 业务 ----------------
+
+def install_token_new(name, ttl=900):
+    """一次性安装令牌：15 分钟有效，用一次就作废。长期 token 不再出现在命令里。"""
+    tok = uuid.uuid4().hex + uuid.uuid4().hex[:8]
+    run("UPDATE hosts SET itoken=?, iexp=? WHERE name=?", (tok, now() + ttl, name))
+    return tok, now() + ttl
+
+
+def install_token_check(handler):
+    """从 Authorization: Bearer 或 ?it= 取一次性令牌，返回 (host_name, token) 或 None。"""
+    tok = ""
+    auth = handler.headers.get("Authorization") or ""
+    if auth.lower().startswith("bearer "):
+        tok = auth[7:].strip()
+    if not tok:
+        tok = (parse_qs(urlparse(handler.path).query).get("it", [""])[0] or "").strip()
+    if not tok:
+        return None
+    h = one("SELECT name, itoken, iexp FROM hosts WHERE itoken=?", (tok,))
+    if not h or not h.get("iexp") or h["iexp"] < now():
+        return None
+    return h["name"], tok
+
 
 def bootstrap():
     ags = rows("""SELECT id,name,host,monogram,status,seen,always_on,managed_by,cwd,model,pinned,workdir,
@@ -1037,16 +1060,15 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(body)
                 return
             if p in ("/api/host/daemon.py", "/api/host/install.ps1"):
-                q2 = parse_qs(u.query)
-                name, tok = q2.get("name", [""])[0], q2.get("t", [""])[0]
-                h_ = one("SELECT * FROM hosts WHERE name=?", (name,))
-                if not h_ or not h_["token"] or not hmac.compare_digest(tok, h_["token"]):
-                    return self._json({"error": "token 不对"}, 403)
                 if p.endswith("daemon.py"):
+                    # daemon 源码是开源的，不需要凭据
                     data = open(DAEMON_SRC, "rb").read()
                     ctype = "text/x-python; charset=utf-8"
                 else:
-                    data = self._install_ps1(name, tok).encode()
+                    ok_ = install_token_check(self)
+                    if not ok_:
+                        return self._json({"error": "安装令牌无效或已过期，回中枢重新生成"}, 403)
+                    data = self._install_ps1(ok_[0], ok_[1]).encode()
                     ctype = "text/plain; charset=utf-8"
                 self.send_response(200)
                 self.send_header("Content-Type", ctype)
@@ -1056,12 +1078,10 @@ class Handler(BaseHTTPRequestHandler):
                 self.wfile.write(data)
                 return
             if p == "/api/host/install.sh":
-                q2 = parse_qs(u.query)
-                name, tok = q2.get("name", [""])[0], q2.get("t", [""])[0]
-                h = one("SELECT * FROM hosts WHERE name=?", (name,))
-                if not h or not h["token"] or not hmac.compare_digest(tok, h["token"]):
-                    return self._json({"error": "token 不对"}, 403)
-                return self._install_script(name, tok)
+                ok_ = install_token_check(self)
+                if not ok_:
+                    return self._json({"error": "安装令牌无效或已过期，回中枢重新生成"}, 403)
+                return self._install_script(ok_[0], ok_[1])
             if p == "/api/webver":
                 try:
                     idx = open(os.path.join(STATIC, "index.html"), encoding="utf-8").read()
@@ -1123,7 +1143,8 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
-            if not p.startswith("/api/daemon/") and p != "/api/monitor/ingest":
+            if (not p.startswith("/api/daemon/") and p != "/api/monitor/ingest"
+                    and p != "/api/host/claim"):        # claim 凭一次性令牌，不需要登录
                 if not self._authed():
                     return
             if p == "/api/totp/setup":
@@ -1381,6 +1402,21 @@ class Handler(BaseHTTPRequestHandler):
                     raise Api(409, "这台主机上还有 %d 个 agent" % n)
                 run("DELETE FROM hosts WHERE name=?", (name,))
                 return self._json({"ok": True})
+            if p == "/api/host/install_token":
+                d = self._body()
+                name = (d.get("name") or "").strip()
+                if not one("SELECT name FROM hosts WHERE name=?", (name,)):
+                    raise Api(404, "没有这台主机")
+                tok, exp = install_token_new(name)
+                return self._json({"ok": True, "it": tok, "expires": exp})
+            if p == "/api/host/claim":
+                ok_ = install_token_check(self)
+                if not ok_:
+                    raise Api(403, "安装令牌无效或已过期，回中枢重新生成")
+                name, tok = ok_
+                h = one("SELECT token FROM hosts WHERE name=?", (name,))
+                run("UPDATE hosts SET itoken=NULL, iexp=NULL WHERE name=?", (name,))
+                return self._json({"name": name, "token": (h or {}).get("token") or ""})
             if p == "/api/host/reload":
                 # 让节点自己重载：相当于远程 systemctl restart，给没有 SSH 的机器（Windows）用
                 d = self._body()
@@ -1708,21 +1744,24 @@ class Handler(BaseHTTPRequestHandler):
             self._json({"error": "服务器错误"}, 500)
 
     # ---- 文件 ----
-    def _install_ps1(self, host, token):
-        """Windows 版安装脚本：纯 ASCII，避免 PowerShell 5.1 的中文编码坑。"""
+    def _install_ps1(self, host, it_token):
+        """Windows 安装脚本：纯 ASCII。长期 token 不在命令里，运行时用一次性令牌换。"""
         hub = CONF.get("public_url", "https://nykj.store/hub")
         return r"""$ErrorActionPreference = "Stop"
-$HostName = "%(host)s"
+$Itoken = "%(it)s"
 $Hub = "%(hub)s"
-$Token = "%(token)s"
 $Root = Join-Path $env:USERPROFILE "aihub"
 $Dir = Join-Path $Root "daemon"
 $LogDir = Join-Path $Root "logs"
 New-Item -ItemType Directory -Force -Path $Dir,$LogDir | Out-Null
 
+Write-Host "==> claim"
+$claim = Invoke-RestMethod -Method Post -Uri "$Hub/api/host/claim" -Headers @{ Authorization = "Bearer $Itoken" }
+$HostName = $claim.name
+$Token = $claim.token
+
 Write-Host "==> download daemon.py"
-$url = "$Hub/api/host/daemon.py?name=" + [uri]::EscapeDataString($HostName) + "&t=$Token"
-Invoke-WebRequest -UseBasicParsing -Uri $url -OutFile (Join-Path $Dir "daemon.py")
+Invoke-WebRequest -UseBasicParsing -Uri "$Hub/api/host/daemon.py" -OutFile (Join-Path $Dir "daemon.py")
 
 $cfg = @{ hub = $Hub; token = $Token; name = $HostName; log_dir = $LogDir } | ConvertTo-Json
 Set-Content -Path (Join-Path $Dir "config.json") -Value $cfg -Encoding ASCII
@@ -1749,22 +1788,28 @@ schtasks /Run /TN "AIHubDaemon" | Out-Null
 Start-Sleep -Seconds 3
 Write-Host "==> installed. task AIHubDaemon registered (onlogon) and started."
 Write-Host "    config: $Dir\config.json    logs: $LogDir"
-""" % {"host": host, "hub": hub, "token": token}
+""" % {"it": it_token, "hub": hub}
 
-    def _install_script(self, host, token):
+    def _install_script(self, host, it_token):
         import base64 as b64
         src = open(DAEMON_SRC, "rb").read()
         payload = b64.b64encode(src).decode()
         sh = """#!/usr/bin/env bash
 set -e
-HOST_NAME="%(host)s"
 HUB="%(hub)s"
-TOKEN="%(token)s"
+IT="%(it)s"
 DIR="$HOME/aihub/daemon"
 echo "==> 检查环境"
 command -v python3 >/dev/null || { echo "缺 python3"; exit 1; }
 command -v kimi >/dev/null || echo "!! 没找到 kimi 命令，Daemon 装好了也跑不了模型，请先安装并登录 kimi"
 mkdir -p "$DIR" "$HOME/aihub/logs"
+echo "==> 换取本机凭据"
+CLAIM=$(curl -fsS -X POST "$HUB/api/host/claim" -H "Authorization: Bearer $IT") || {
+  echo "!! 安装令牌无效或已过期，回中枢重新生成一条命令"; exit 1; }
+read -r HOST_NAME TOKEN <<EOF2
+$(printf '%%s' "$CLAIM" | python3 -c 'import sys,json;d=json.load(sys.stdin);print(d["name"]+"\t"+d["token"])')
+EOF2
+[ -n "$TOKEN" ] || { echo "!! 没拿到 token: $CLAIM"; exit 1; }
 echo "==> 写入 daemon"
 echo '%(payload)s' | base64 -d > "$DIR/daemon.py"
 cat > "$DIR/config.json" <<JSON
@@ -1792,7 +1837,7 @@ sudo systemctl daemon-reload
 sudo systemctl enable --now aihub-daemon
 sleep 2
 systemctl is-active aihub-daemon && echo "==> 已上线：$HOST_NAME" || echo "!! 启动失败，看 journalctl -u aihub-daemon"
-""" % {"host": host, "hub": CONF.get("public_url", "https://nykj.store/hub"), "token": token, "payload": payload}
+""" % {"hub": CONF.get("public_url", "https://nykj.store/hub"), "it": it_token, "payload": payload}
         body = sh.encode()
         self.send_response(200)
         self.send_header("Content-Type", "text/x-shellscript; charset=utf-8")

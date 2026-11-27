@@ -1248,23 +1248,30 @@ async function createHost(){
 
 async function showInstall(name){
   try{
-    const d = await api('api/host/token', {method:'POST', headers:{'Content-Type':'application/json'},
+    const d = await api('api/host/install_token', {method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify({name})});
-    const cmd = `curl -fsSL "https://nykj.store/hub/api/host/install.sh?name=${encodeURIComponent(name)}&t=${d.token}" | bash`;
+    const it = d.it;
+    const mins = Math.max(1, Math.round((d.expires - Date.now()/1000) / 60));
+    const lin = `curl -fsSL -H "Authorization: Bearer ${it}" https://nykj.store/hub/api/host/install.sh | bash`;
+    const win = `$h=@{Authorization="Bearer ${it}"}; iwr -useb -Headers $h https://nykj.store/hub/api/host/install.ps1 | iex`;
     const box = document.createElement('div');
     box.style.cssText = 'position:fixed;inset:0;background:rgba(20,24,26,.4);z-index:100;display:flex;align-items:flex-end;justify-content:center;padding:0';
     box.className = 'cmdbox';
-    box.innerHTML = `<div style="background:#fff;border-radius:16px 16px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom));max-width:560px;width:100%;margin:0 auto">
-      <div style="font-size:15px;font-weight:600;margin-bottom:8px">在「${esc(name)}」上执行</div>
-      <div style="font-size:12px;color:#6E7873;margin-bottom:10px">需要 python3 与已登录的 kimi；命令里带 token，别外传。</div>
-      <textarea readonly spellcheck="false" style="width:100%;height:132px;font:11.5px/1.5 ui-monospace,Menlo,monospace;padding:10px;border:1px solid #DCE1DD;border-radius:8px;background:#FAFBFA;word-break:break-all;resize:none">${esc(cmd)}</textarea>
+    box.innerHTML = `<div style="background:#fff;border-radius:16px 16px 0 0;padding:18px 18px calc(18px + env(safe-area-inset-bottom));max-width:560px;width:100%;margin:0 auto;max-height:88vh;overflow:auto">
+      <div style="font-size:15px;font-weight:600;margin-bottom:6px">在「${esc(name)}」上执行</div>
+      <div style="font-size:12px;color:#6E7873;margin-bottom:10px">需要 python3 与已登录的 kimi。这条命令用的是<b>一次性令牌</b>，${mins} 分钟内有效、只能用一次；长期凭据在机器上就地生成，不经过命令行。</div>
+      <div style="font-size:12px;color:#6E7873;margin:8px 0 4px">Linux / macOS</div>
+      <textarea readonly spellcheck="false" style="width:100%;height:64px;font:11.5px/1.5 ui-monospace,Menlo,monospace;padding:10px;border:1px solid #DCE1DD;border-radius:8px;background:#FAFBFA;word-break:break-all;resize:none">${esc(lin)}</textarea>
+      <div style="font-size:12px;color:#6E7873;margin:8px 0 4px">Windows (PowerShell)</div>
+      <textarea readonly spellcheck="false" style="width:100%;height:64px;font:11.5px/1.5 ui-monospace,Menlo,monospace;padding:10px;border:1px solid #DCE1DD;border-radius:8px;background:#FAFBFA;word-break:break-all;resize:none">${esc(win)}</textarea>
       <div style="display:flex;gap:10px;margin-top:12px;justify-content:flex-end">
-        <button class="pick" style="padding:10px 14px" onclick="navigator.clipboard.writeText(this.dataset.c);toast('已复制')" data-c="${escAttr(cmd)}">复制</button>
+        <button class="pick" style="padding:10px 14px" data-c="${escAttr(lin)}" onclick="navigator.clipboard.writeText(this.dataset.c);toast('已复制 Linux 命令')">复制 Linux</button>
+        <button class="pick" style="padding:10px 14px" data-c="${escAttr(win)}" onclick="navigator.clipboard.writeText(this.dataset.c);toast('已复制 Windows 命令')">复制 Windows</button>
         <button class="pick" style="padding:10px 14px" onclick="this.closest('div[style]').remove()">关闭</button>
       </div></div>`;
     document.body.appendChild(box);
     box.addEventListener('click', e => { if(e.target === box) box.remove(); });
-  }catch(e){ toast('取 token 失败：' + e.message); }
+  }catch(e){ toast('生成安装命令失败：' + e.message); }
 }
 
 async function rotateHost(name){
