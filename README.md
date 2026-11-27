@@ -15,7 +15,7 @@
 - **置顶**：手动钉住常用会话，最近置顶的排在最前。
 - **团队**：指定一个 agent 做主 agent，把其他 agent 编入它的团队；主 agent 用 `dispatch` 给成员派活、用 `task` 取回结论，团队外的 agent 会被拒绝。
 - **输出模式**：完整 / 仅阶段 / 仅结果，三种视角切换，不重跑任务。
-- **附件**：拍照 / 相册 / 文件三种入口，落盘到 `inbox/<agent>/<日期>/`，发消息时把未取走的附件（最多 8 个，正文提到的优先）带给 agent；图片 agent 用 `ReadMediaFile` 真读。
+- **附件**：拍照 / 相册 / 文件三种入口，落盘到 `inbox/<agent>/<日期>/`，发消息时把全部未取走的附件带给 agent；图片 agent 用 `ReadMediaFile` 真读。
 - **预览**：图片、PDF、音视频、文本 / Markdown / 代码，点开即看，也能下载。
 - **Markdown**：标题、列表、表格、代码块、引用，聊天与文档预览都按 Markdown 渲染。
 - **技能包**：给 agent 绑定 `SKILL.md`，Daemon 从本机共享库 `~/aihub/skills/` 软链到工作目录的 `skills/`，再镜像进 agent 的 `KIMI_CODE_HOME/skills`（ACP 实际扫描的目录）；`AGENTS.md` 只写人格与发文件说明。

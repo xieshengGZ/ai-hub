@@ -174,6 +174,7 @@ function logout(){ api('api/logout', {method:'POST'}).finally(()=>{ location.rel
 
 /* ---------- 列表 ---------- */
 async function boot(){
+  CHAT_CACHE.clear();   // 内存缓存不跨启动沿用，避免旧版本留下的脏数据
   try{
     const d = await api('api/bootstrap');
     AGENTS = d.agents || [];
@@ -273,6 +274,7 @@ async function openAgent(id){
   }
   CHAT_GEN++;
   const gen = CHAT_GEN;
+  clearTimers();
   CUR = known;
   LAST_ID = 0; RENDERED.clear(); JOB = null; window.STICK = true; WIN = 50; HAS_MORE = false; FIRST_ID = 0;
   $('chatName').textContent = CUR.name;
@@ -325,6 +327,7 @@ async function pull(reset, keepAnchor){
   if(reset){
     d = await api(`api/msg?agent=${encodeURIComponent(aid)}&limit=${WIN}`);
     if(gen !== CHAT_GEN || !CUR || CUR.id !== aid) return;
+    if(d.agent && d.agent.id !== aid) return;
     const box = $('chat');
     const keepTop = keepAnchor ? (firstVisibleId() || FIRST_ID) : 0;
     window.STICK = !keepAnchor;
@@ -347,6 +350,7 @@ async function pull(reset, keepAnchor){
     const since = Math.max(0, LAST_ID - 1);
     d = await api(`api/msg?agent=${encodeURIComponent(aid)}&after=${since}`);
     if(gen !== CHAT_GEN || !CUR || CUR.id !== aid) return;
+    if(d.agent && d.agent.id !== aid) return;
     const cc2 = cacheOf(aid);
     (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); if(!FIRST_ID) FIRST_ID = m.id; draw(m); cachePut(cc2, m); });
   }
@@ -576,6 +580,7 @@ function viewImg(u){
 
 function draw(m){
   const box = $('chat');
+  if(m.agent && (!CUR || m.agent !== CUR.id)) return;   // 不是这个会话的消息，一律不画
   if(m.role === 'me'){
     let el = box.querySelector(`[data-id="${m.id}"]`);
     if(!el){

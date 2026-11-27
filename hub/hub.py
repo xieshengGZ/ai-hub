@@ -442,6 +442,8 @@ def session_get(agent, after=0, before=0, limit=0):
         if msgs:
             has_more = bool(one("SELECT 1 FROM messages WHERE agent=? AND id<? LIMIT 1",
                                 (agent, msgs[0]["id"])))
+    for m in msgs:
+        m["agent"] = agent        # 让前端能自证"这条消息属于哪个会话"
     if msgs:
         ids = [m["id"] for m in msgs]
         ph = ",".join("?" * len(ids))
