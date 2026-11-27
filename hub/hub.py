@@ -542,15 +542,13 @@ def daemon_poll(wait_s, host=""):
                 for f in picked:
                     run("UPDATE files SET msg=? WHERE id=?", (j["user_msg"], f["id"]))
                 files = picked
-                skills = rows("""SELECT s.id, s.name, s.summary, s.when_to_use, s.body, s.version
-                                   FROM skills s JOIN agent_skills a ON a.skill=s.id
-                                   WHERE a.agent=? AND a.enabled=1""", (ag["id"],))
+                # 中枢只转发文本；技能装没装、在哪，由 daemon 看磁盘决定。
                 return {"job": {"id": j["id"], "text": one("SELECT text FROM messages WHERE id=?",
                                                            (j["user_msg"],))["text"],
                                 "workdir": (j["cwd"] if "cwd" in j.keys() and j["cwd"] else "")},
                         "agent": {"id": ag["id"], "name": ag["name"], "cwd": ag["cwd"],
                                   "prompt": ag["prompt"], "model": ag["model"],
-                                  "model_cfg": model_cfg_for(ag["model"]), "skills": skills},
+                                  "model_cfg": model_cfg_for(ag["model"])},
                         "files": [{"id": f["id"], "name": f["name"],
                                    "mime": f["mime"] or "",
                                    "kind": file_kind(f["mime"], f["name"])} for f in files]}
