@@ -871,13 +871,20 @@ async function pickModel(id){
 }
 
 /* ---------- 斜杠技能 ---------- */
-let SKILLS = [], SLASH = [], SLASH_IDX = 0, COMPOSING = false;
+let SKILLS = [], SKILL_TOTAL = 0, SLASH = [], SLASH_IDX = 0, COMPOSING = false;
+function paintSkillCount(){
+  const el = $('skillCount');
+  if(el) el.textContent = SKILL_TOTAL ? SKILLS.length + '/' + SKILL_TOTAL : '';
+}
 async function loadSkillCache(){
-  if(!CUR){ SKILLS = []; return; }
+  if(!CUR){ SKILLS = []; SKILL_TOTAL = 0; paintSkillCount(); return; }
   try{
     const d = await api('api/skills?agent=' + encodeURIComponent(CUR.id));
-    SKILLS = (d.skills || []).filter(s => s.enabled);
-  }catch(e){ SKILLS = []; }
+    const ss = d.skills || [];
+    SKILL_TOTAL = ss.length;
+    SKILLS = ss.filter(s => s.enabled);
+  }catch(e){ SKILLS = []; SKILL_TOTAL = 0; }
+  paintSkillCount();
 }
 function closeSlash(){ SLASH = []; SLASH_IDX = 0; const m = $('slashMenu'); if(m){ m.classList.remove('on'); m.innerHTML = ''; } }
 function slashPaint(){
@@ -1115,7 +1122,7 @@ async function loadSkills(){
   const ss = d.skills || [];
   const on = ss.filter(s => s.enabled);
   const off = ss.filter(s => !s.enabled);
-  $('skillCount').textContent = on.length + '/' + ss.length;
+  SKILLS = on; SKILL_TOTAL = ss.length; paintSkillCount();
   const row = (s, right) =>
     `<div class="item"><span class="nm">/${esc(s.id)} · ${esc(s.name)}<br>` +
     `<span style="font-size:12px;color:#8B949A">${esc(s.summary || '')}</span></span>${right}</div>`;
@@ -1464,7 +1471,7 @@ function openSheet(k){
   if(k === 's'){ setTimeout(()=>$('qInput').focus(), 150); }
   if(k === 'team'){ loadTeam(); $('teamCount').textContent = (CUR && CUR.team) ? CUR.team + ' 个' : ''; }
   if(k === 'a') loadStaged();
-  if(k === 'm'){ renderJobLine(); paintAlways(); paintAgentInfo(); paintCurModel(); }
+  if(k === 'm'){ renderJobLine(); paintAlways(); paintAgentInfo(); paintCurModel(); paintSkillCount(); loadSkillCache(); }
 }
 function closeSheet(fromHistory){
   $('mask').classList.remove('on');
