@@ -116,7 +116,7 @@ def init():
         CREATE TABLE IF NOT EXISTS agents(
           id TEXT PRIMARY KEY, name TEXT, host TEXT, monogram TEXT, cwd TEXT,
           model TEXT, prompt TEXT, sort INTEGER DEFAULT 9, always_on INTEGER DEFAULT 0,
-          managed_by TEXT, deleted INTEGER DEFAULT 0,
+          managed_by TEXT, deleted INTEGER DEFAULT 0, pinned REAL DEFAULT 0,
           status TEXT DEFAULT 'off', seen REAL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS messages(
           id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, role TEXT, text TEXT,
@@ -159,7 +159,7 @@ def init():
         CREATE INDEX IF NOT EXISTS ix_msg_agent ON messages(agent, id);
         CREATE INDEX IF NOT EXISTS ix_job_status ON jobs(status);
         """)
-        for col in ("managed_by TEXT", "deleted INTEGER DEFAULT 0"):
+        for col in ("managed_by TEXT", "deleted INTEGER DEFAULT 0", "pinned REAL DEFAULT 0"):
             try:
                 c.execute("ALTER TABLE agents ADD COLUMN %s" % col)
             except Exception:
@@ -199,7 +199,7 @@ def init():
                 c.execute("ALTER TABLE hosts ADD COLUMN %s" % col)
             except Exception:
                 pass
-        for col in ("managed_by TEXT", "deleted INTEGER DEFAULT 0"):
+        for col in ("managed_by TEXT", "deleted INTEGER DEFAULT 0", "pinned REAL DEFAULT 0"):
             try:
                 c.execute("ALTER TABLE agents ADD COLUMN %s" % col)
             except Exception:
@@ -394,9 +394,10 @@ class Api(Exception):
 # ---------------- 业务 ----------------
 
 def bootstrap():
-    ags = rows("""SELECT id,name,host,monogram,status,seen,always_on,managed_by,cwd,model,
+    ags = rows("""SELECT id,name,host,monogram,status,seen,always_on,managed_by,cwd,model,pinned,
                          (SELECT COUNT(*) FROM agents x WHERE x.managed_by=agents.id AND x.deleted=0) AS team
-                  FROM agents WHERE deleted=0 ORDER BY sort,id""")
+                  FROM agents WHERE deleted=0
+                  ORDER BY CASE WHEN pinned>0 THEN 0 ELSE 1 END, pinned DESC, sort, id""")
     out = []
     for a in ags:
         last = one("""SELECT text, ts, role FROM messages WHERE agent=? ORDER BY id DESC LIMIT 1""", (a["id"],))
@@ -409,6 +410,7 @@ def bootstrap():
             "last": (last or {}).get("text", "")[:80].replace("\n", " "),
             "ts": (last or {}).get("ts", 0), "unread": unread,
             "always_on": bool(a.get("always_on")),
+            "pinned": a.get("pinned") or 0,
             "managed_by": a.get("managed_by"),
             "cwd": a.get("cwd"),
             "model": a.get("model") or "",
@@ -1564,6 +1566,15 @@ class Handler(BaseHTTPRequestHandler):
                     raise Api(404, "没有这个 agent")
                 run("UPDATE agents SET always_on=? WHERE id=?", (on, aid))
                 return self._json({"ok": True, "agent": aid, "always_on": bool(on)})
+            if p == "/api/agent/pin":
+                d = self._body()
+                aid = d.get("agent", "")
+                if not one("SELECT id FROM agents WHERE id=? AND deleted=0", (aid,)):
+                    raise Api(404, "没有这个 agent")
+                ts = now() if d.get("on") else 0
+                run("UPDATE agents SET pinned=? WHERE id=?", (ts, aid))
+                bump()
+                return self._json({"ok": True, "agent": aid, "pinned": bool(ts), "ts": ts})
             if p == "/api/agent/reload":
                 d = self._body()
                 aid = d.get("agent", "")

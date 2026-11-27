@@ -97,8 +97,21 @@ def main():
         con.execute(
             "INSERT INTO agents(id,name,host,monogram,cwd,model,prompt,sort,always_on,deleted) "
             "VALUES('t1','Test agent','box','T',?,'','',1,0,0)", (tmp,))
+        con.execute(
+            "INSERT INTO agents(id,name,host,monogram,cwd,model,prompt,sort,always_on,deleted) "
+            "VALUES('t2','Second agent','box','S',?,'','',0,0,0)", (tmp,))
         con.commit()
         con.close()
+
+        boot = get("/api/bootstrap")
+        assert [a["id"] for a in boot["agents"]] == ["t2", "t1"], boot
+        pinned = post("/api/agent/pin", {"agent": "t1", "on": True})
+        assert pinned.get("pinned") is True and pinned.get("ts", 0) > 0, pinned
+        boot = get("/api/bootstrap")
+        assert boot["agents"][0]["id"] == "t1" and boot["agents"][0]["pinned"] > 0, boot
+        assert boot["agents"][1]["id"] == "t2", boot
+        assert post("/api/agent/pin", {"agent": "t1", "on": False}).get("pinned") is False
+        assert [a["id"] for a in get("/api/bootstrap")["agents"]] == ["t2", "t1"]
 
         sent = post("/api/send", {"agent": "t1", "text": "hello", "mode": "full"})
         jid = sent["job"]

@@ -187,25 +187,27 @@ async function boot(){
 }
 
 function renderList(){
+  const row = (a) => {
+    const state = a.state === 'busy' ? 'busy' : (a.state === 'on' ? 'on' : '');
+    let tag = a.id === 'main' ? '<span class="tag">调度</span>' : '';
+    if(a.pinned) tag += '<span class="tag">置顶</span>';
+    if(a.always_on) tag += '<span class="tag on">常驻</span>';
+    return `<div class="row" onclick="openAgent('${a.id}')">
+      <div class="body">
+        <div class="top"><span class="sdot ${state}"></span><span class="name">${esc(a.name)}</span>${tag}
+          <span class="time">${a.ts?hhmm(a.ts):''}</span></div>
+        <div class="last">${esc(a.last || (a.state==='off'?'未运行':'在线'))}</div>
+      </div>
+      ${a.unread ? `<span class="unread">${a.unread}</span>` : ''}
+    </div>`;
+  };
+  const pinned = AGENTS.filter(a => a.pinned).sort((x, y) => y.pinned - x.pinned);
   const hosts = {};
-  AGENTS.forEach(a => { (hosts[a.host] = hosts[a.host] || []).push(a); });
+  AGENTS.filter(a => !a.pinned).forEach(a => { (hosts[a.host] = hosts[a.host] || []).push(a); });
   let html = '';
-  const order = Object.keys(hosts);
-  order.forEach(h => {
-    html += `<div class="grouphd">${esc(h)}</div>`;
-    hosts[h].forEach(a => {
-      const state = a.state === 'busy' ? 'busy' : (a.state === 'on' ? 'on' : '');
-      let tag = a.id === 'main' ? '<span class="tag">调度</span>' : '';
-      if(a.always_on) tag += '<span class="tag on">常驻</span>';
-      html += `<div class="row" onclick="openAgent('${a.id}')">
-        <div class="body">
-          <div class="top"><span class="sdot ${state}"></span><span class="name">${esc(a.name)}</span>${tag}
-            <span class="time">${a.ts?hhmm(a.ts):''}</span></div>
-          <div class="last">${esc(a.last || (a.state==='off'?'未运行':'在线'))}</div>
-        </div>
-        ${a.unread ? `<span class="unread">${a.unread}</span>` : ''}
-      </div>`;
-    });
+  if(pinned.length) html += '<div class="grouphd">置顶</div>' + pinned.map(row).join('');
+  Object.keys(hosts).forEach(h => {
+    html += `<div class="grouphd">${esc(h)}</div>` + hosts[h].map(row).join('');
   });
   $('agentList').innerHTML = html || '<div class="hint">还没有 agent，先在中枢里创建。</div>';
 }
@@ -1447,6 +1449,27 @@ async function toggleAlways(){
   }catch(e){ toast('设置失败：' + e.message); }
 }
 
+async function togglePin(){
+  if(!CUR) return;
+  const want = !CUR.pinned;
+  try{
+    const d = await api('api/agent/pin', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({agent: CUR.id, on: want})});
+    const ts = d.ts || 0;
+    CUR.pinned = ts;
+    const a = AGENTS.find(x => x.id === CUR.id);
+    if(a) a.pinned = ts;
+    paintPin(); renderList();
+    toast(want ? '已置顶，排在最前' : '已取消置顶');
+  }catch(e){ toast((want ? '置顶' : '取消置顶') + '失败：' + e.message); }
+}
+
+function paintPin(){
+  const on = !!(CUR && CUR.pinned);
+  $('pinLabel').textContent = on ? '已置顶' : '关';
+  $('pinLabel').classList.toggle('cur', on);
+}
+
 async function reloadAgent(){
   if(!CUR) return;
   if(!confirm(`重载「${CUR.name}」？\n会重启它的 ACP 进程，正在跑的任务结束后生效；对话历史保留。`)) return;
@@ -1480,7 +1503,7 @@ function openSheet(k){
   if(k === 's'){ setTimeout(()=>$('qInput').focus(), 150); }
   if(k === 'team'){ loadTeam(); $('teamCount').textContent = (CUR && CUR.team) ? CUR.team + ' 个' : ''; }
   if(k === 'a') loadStaged();
-  if(k === 'm'){ renderJobLine(); paintAlways(); paintAgentInfo(); paintCurModel(); paintSkillCount(); loadSkillCache(); }
+  if(k === 'm'){ renderJobLine(); paintPin(); paintAlways(); paintAgentInfo(); paintCurModel(); paintSkillCount(); loadSkillCache(); }
 }
 function closeSheet(fromHistory){
   $('mask').classList.remove('on');

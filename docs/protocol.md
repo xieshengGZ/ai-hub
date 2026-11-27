@@ -33,6 +33,7 @@
 | GET | `/api/host/daemon.py?name=&t=` | daemon 源码（凭 host token） |
 | GET/POST | `/api/team` `/api/team/add` `/api/team/remove` | 主 agent 与成员关系 |
 | POST | `/api/agent/create` `/api/agent/delete` `/api/agent/restore` `/api/agent/purge` `/api/agent/always_on` | agent 生命周期 |
+| POST | `/api/agent/pin` | `{agent, on}` 置顶 / 取消置顶会话 |
 | POST | `/api/agent/reload` | 重启该 agent 的 ACP 进程，重载技能与配置；会话历史保留 |
 | GET | `/api/search?q=` | 搜消息与文件名 |
 
