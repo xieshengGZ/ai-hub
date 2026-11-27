@@ -1,6 +1,7 @@
 /* AI 中枢 · 前端 */
 let AGENTS = [], CUR = null, LAST_ID = 0, JOB = null, MODE = localStorage.getItem('mode') || 'full';
 let POLL = null, STAGED = [], RENDERED = new Set();
+let CHAT_GEN = 0;   // 切换会话即递增；迟到的响应据此丢弃，避免画进别的会话
 
 const $ = (id) => document.getElementById(id);
 const esc = (s) => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
@@ -260,6 +261,7 @@ document.addEventListener('visibilitychange', () => {
 async function openAgent(id){
   const known = AGENTS.find(a => a.id === id);
   if(!known){
+    CHAT_GEN++;
     CUR = null;
     try{ history.replaceState(null, '', location.pathname); }catch(e){}
     show('s-list');
@@ -267,6 +269,8 @@ async function openAgent(id){
     toast('这个会话已经不存在了，已回到列表');
     return;
   }
+  CHAT_GEN++;
+  const gen = CHAT_GEN;
   CUR = known;
   LAST_ID = 0; RENDERED.clear(); JOB = null; window.STICK = true; WIN = 50; HAS_MORE = false; FIRST_ID = 0;
   $('chatName').textContent = CUR.name;
@@ -283,10 +287,11 @@ async function openAgent(id){
     renderLoadMore();
     $('chat').scrollTop = $('chat').scrollHeight;
     window.STICK = true;
-    try{ await pull(false); }catch(e){ $('chatSub').textContent = '同步失败：' + e.message; }
+    try{ await pull(false); }catch(e){ if(gen === CHAT_GEN) $('chatSub').textContent = '同步失败：' + e.message; }
   }else{
-    try{ await pull(true); }catch(e){ $('chatSub').textContent = '加载失败：' + e.message; }
+    try{ await pull(true); }catch(e){ if(gen === CHAT_GEN) $('chatSub').textContent = '加载失败：' + e.message; }
   }
+  if(gen !== CHAT_GEN) return;
   loadSkillCache(); loadFileCache();
   try{ history.pushState({chat: id}, '', '#' + id); }catch(e){}
 }
@@ -313,9 +318,11 @@ function cacheRebuild(agent, msgs, hasMore, win){
 }
 async function pull(reset, keepAnchor){
   if(!CUR) return;
+  const aid = CUR.id, gen = CHAT_GEN;
   let d;
   if(reset){
-    d = await api(`api/msg?agent=${encodeURIComponent(CUR.id)}&limit=${WIN}`);
+    d = await api(`api/msg?agent=${encodeURIComponent(aid)}&limit=${WIN}`);
+    if(gen !== CHAT_GEN || !CUR || CUR.id !== aid) return;
     const box = $('chat');
     const keepTop = keepAnchor ? (firstVisibleId() || FIRST_ID) : 0;
     window.STICK = !keepAnchor;
@@ -324,7 +331,7 @@ async function pull(reset, keepAnchor){
     LAST_ID = 0; FIRST_ID = 0;
     (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); if(!FIRST_ID) FIRST_ID = m.id; draw(m); });
     HAS_MORE = !!d.has_more;
-    const cc = cacheRebuild(CUR.id, d.messages || [], HAS_MORE, WIN);
+    const cc = cacheRebuild(aid, d.messages || [], HAS_MORE, WIN);
     renderLoadMore();
     if(keepTop){
       const el = box.querySelector(`[data-id="${keepTop}"]`);
@@ -336,8 +343,9 @@ async function pull(reset, keepAnchor){
     }
   }else{
     const since = Math.max(0, LAST_ID - 1);
-    d = await api(`api/msg?agent=${encodeURIComponent(CUR.id)}&after=${since}`);
-    const cc2 = cacheOf(CUR.id);
+    d = await api(`api/msg?agent=${encodeURIComponent(aid)}&after=${since}`);
+    if(gen !== CHAT_GEN || !CUR || CUR.id !== aid) return;
+    const cc2 = cacheOf(aid);
     (d.messages || []).forEach(m => { LAST_ID = Math.max(LAST_ID, m.id); if(!FIRST_ID) FIRST_ID = m.id; draw(m); cachePut(cc2, m); });
   }
   JOB = d.job;
@@ -380,6 +388,7 @@ function back(){
 }
 function leaveChat(){
   clearTimers();
+  CHAT_GEN++;
   CUR = null;
   try{ history.replaceState(null,'', location.pathname); }catch(e){}
   if(DESK()){ placeholder(); return; }
