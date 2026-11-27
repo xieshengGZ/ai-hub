@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112711   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112713   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
@@ -1183,12 +1183,17 @@ def refresh_agents():
                     if op["op"] == "purge_dir":
                         aid_ = op["agent"]
                         cwd = op.get("path") or WHERES.get(aid_) or resolve_cwd({"id": aid_})
-                        if cwd and os.path.isdir(cwd) and under_agents(cwd):
-                            shutil.rmtree(cwd, ignore_errors=True)
-                            sys.stderr.write("已清除目录: %s\n" % cwd)
-                        else:
-                            sys.stderr.write("项目目录保留（不在本机 agents 目录下）: %r agent=%s\n"
-                                             % (cwd, aid_))
+                        # 工作目录一律保留：里面可能有你的文件。只清壳自己的状态。
+                        if cwd and os.path.isdir(cwd):
+                            write_agents_md(cwd, "", "")   # 把我们写进 AGENTS.md 的块去掉
+                            if under_agents(cwd):
+                                try:
+                                    os.rmdir(cwd)      # 只有空目录才收掉，非空就地保留
+                                    sys.stderr.write("已收掉空目录: %s\n" % cwd)
+                                except OSError:
+                                    sys.stderr.write("工作目录保留: %s\n" % cwd)
+                            else:
+                                sys.stderr.write("工作目录保留: %s\n" % cwd)
                         st_ = STATES.get(aid_) or state_dir(op.get("path") or cwd, aid_)
                         if os.path.isdir(st_):
                             shutil.rmtree(st_, ignore_errors=True)

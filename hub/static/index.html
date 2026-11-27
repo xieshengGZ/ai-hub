@@ -212,7 +212,7 @@
   <div class="sheet" id="sheet-arch">
     <div class="grab"></div>
     <div class="sh"><b>已删除的 agent</b><button class="x" onclick="closeSheet()"><svg width="20" height="20"><use href="#i-close"/></svg></button></div>
-    <div class="hint">删除只是隐藏，历史消息与产出还在。可以恢复；彻底清除会连消息、任务、产出记录和机器上的目录一起删掉，不可恢复。</div>
+    <div class="hint">删除只是隐藏，历史消息与产出还在。可以恢复；彻底清除会删掉消息、任务、产出记录和壳自己的状态目录，但<b>工作目录一律保留</b>（里面可能有你的文件），不可恢复。</div>
     <div id="archList"></div>
   </div>
 
@@ -269,6 +269,6 @@
 
 
 </div>
-<script src="app.js?v=88"></script>
+<script src="app.js?v=89"></script>
 </body>
 </html>
