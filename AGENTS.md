@@ -11,3 +11,7 @@ The five canonical roles use their default GitHub label names: `needs-triage`, `
 ### Domain docs
 
 Single-context: one `GLOSSARY.md` and `docs/adr/` at the repo root. See `docs/agents/domain.md`.
+
+## Project map
+
+Before changing Hub or Daemon behavior, read `docs/agents/project-map.md`.

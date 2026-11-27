@@ -47,8 +47,9 @@
 | GET | `/api/daemon/agents` | 本机 agent 配置（含技能、提示词） |
 | POST | `/api/daemon/hb` | 心跳：`{host, agents:[{id,state}]}` |
 | POST | `/api/daemon/recover` | 启动时回收遗留任务 |
-| POST | `/api/daemon/artifact` | 报产出元信息 `{agent,name,size,path,mime,job}` |
-| POST | `/api/daemon/upload` | 产出二进制，`X-File-Id` 头 |
+| POST | `/api/daemon/send_file` | 显式回传文件：原始 body + `X-Filename`/`X-From`/`X-To`；`X-To` 为空就挂到最后一条回复下 |
+| POST | `/api/daemon/artifact` | 旧的产出元信息入口（逐轮扫描已停用）；回传用 `send_file` |
+| POST | `/api/daemon/upload` | 旧的产出二进制入口，配合 `artifact` 使用 |
 | POST | `/api/daemon/usage` | 上报按天的本地用时 |
 
 ## Daemon ↔ kimi

@@ -14,11 +14,11 @@
 - **一对一会话**：每个 agent 一条会话，流式输出，随时中止。
 - **团队**：指定一个 agent 做主 agent，把其他 agent 编入它的团队；主 agent 用 `dispatch` 给成员派活、用 `task` 取回结论，团队外的 agent 会被拒绝。
 - **输出模式**：完整 / 仅阶段 / 仅结果，三种视角切换，不重跑任务。
-- **附件**：拍照 / 相册 / 文件三种入口，落盘到 `inbox/<agent>/<日期>/`，发消息时把**全部**未取走的附件带给 agent；图片 agent 用 `ReadMediaFile` 真读。
+- **附件**：拍照 / 相册 / 文件三种入口，落盘到 `inbox/<agent>/<日期>/`，发消息时把未取走的附件（最多 8 个，正文提到的优先）带给 agent；图片 agent 用 `ReadMediaFile` 真读。
 - **预览**：图片、PDF、音视频、文本 / Markdown / 代码，点开即看，也能下载。
 - **Markdown**：标题、列表、表格、代码块、引用，聊天与文档预览都按 Markdown 渲染。
-- **技能包**：给 agent 绑定 `SKILL.md`，Daemon 落地到工作目录的 `skills/`，并写进 `AGENTS.md`。
-- **产出回收**：agent 这轮生成的文件自动上传，挂在那条回复下面。
+- **技能包**：给 agent 绑定 `SKILL.md`，Daemon 从本机共享库 `~/aihub/skills/` 软链到工作目录的 `skills/`，Kimi 用 `--skills-dir` 加载；`AGENTS.md` 只写人格与发文件说明。
+- **文件回传**：agent 显式执行 `aihub-send.sh` / `aihub-send.cmd` 才上传，挂在那条回复下面；也能 `--to <agent>` 投给别的 agent。
 - **一键接入**：Linux 一行 `curl ... | bash`，Windows 一行 PowerShell，自动注册服务/计划任务。
 - **PWA**：手机添加到主屏幕，像原生应用一样用。
 
