@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112718   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112719   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
@@ -35,6 +35,13 @@ KIMI_CONF = (CONF.get("kimi") or "").strip()
 
 
 AGENTS_ROOT = os.path.join(os.path.expanduser("~"), "aihub", "agents")
+
+
+def skills_sig(skills_dir):
+    try:
+        return ",".join(sorted(os.listdir(skills_dir)))
+    except OSError:
+        return ""
 
 
 def under_agents(p):
@@ -342,9 +349,17 @@ class Acp:
     def ensure(self):
         self.materialize_skills()
         home0, margs0 = self._ensure_model_home()
+        sk_dir0 = os.path.join(self.state, "skills")
+        sig = skills_sig(sk_dir0)
         sys.stderr.write("[acp] ensure %s p=%r sid=%r\n" % (self.agent["id"], bool(self.p), self.sid)); sys.stderr.flush()
         if self.p and self.p.poll() is None and self.sid:
-            return
+            if sig == self.skills_sig:
+                return
+            # 技能装/卸了：kimi 只在启动时扫一次技能目录，必须换进程才认
+            sys.stderr.write("技能变化 %r -> %r，重启 acp %s\n"
+                             % (self.skills_sig, sig, self.agent["id"]))
+            sys.stderr.flush()
+            self.kill()
         sys.stderr.write("[acp] spawn kimi acp\n"); sys.stderr.flush()
         kw = {}
         if os.name == "nt":
@@ -368,6 +383,7 @@ class Acp:
                                   stdin=subprocess.PIPE, stdout=subprocess.PIPE,
                                   stderr=subprocess.DEVNULL, text=True, bufsize=1,
                                   encoding="utf-8", errors="replace", **kw)
+        self.skills_sig = sig
         threading.Thread(target=self._reader, daemon=True).start()
         sys.stderr.write("[acp] initialize\n"); sys.stderr.flush()
         r = self.call("initialize", {"protocolVersion": 1,
@@ -480,7 +496,6 @@ class Acp:
     def prompt_stream(self, parts, on_chunk, is_canceled, on_activity=None):
         """发一轮提示，边收边回调。返回 stopReason 或 'canceled'。"""
         self.last_used = time.time()
-        self.skills_sig = ""
         self.ensure()
         # 关键：清掉上一个任务残留的通知，否则旧文本会被算进新回答
         while True:
