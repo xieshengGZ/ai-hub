@@ -33,3 +33,6 @@ jobs:
           curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8899/ | grep -qx 200
           curl -fsS -o /dev/null -w '%{http_code}\n' http://127.0.0.1:8899/app.js | grep -qx 200
           kill %1
+
+      - name: hub flow test
+        run: python3 tests/hub_flow.py
