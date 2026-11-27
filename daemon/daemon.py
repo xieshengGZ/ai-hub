@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112708   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112709   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
@@ -141,12 +141,27 @@ AGENTS_MARK_E = "<!-- aihub:end -->"
 
 
 def write_agents_md(cwd, name, block):
-    """工作目录可能是用户的项目：只维护标记内的块，标记外一个字都不动。"""
+    """工作目录可能是用户的项目：只维护标记内的块，标记外一个字都不动。
+    block 为空（没写人格）时不建文件；已有文件就把标记块去掉。"""
     path = os.path.join(cwd, "AGENTS.md")
     try:
         old = open(path, encoding="utf-8").read()
     except OSError:
         old = ""
+    if not block.strip():
+        if AGENTS_MARK_B in old and AGENTS_MARK_E in old:
+            head = old.split(AGENTS_MARK_B, 1)[0]
+            tail = old.split(AGENTS_MARK_E, 1)[1].lstrip("\n")
+            rest = (head + tail).strip()
+            try:
+                if rest:
+                    with open(path, "w", encoding="utf-8") as f:
+                        f.write(rest + "\n")
+                else:
+                    os.remove(path)
+            except OSError as e:
+                sys.stderr.write("clean AGENTS.md failed: %r\n" % e)
+        return
     seg = AGENTS_MARK_B + "\n" + block.rstrip("\n") + "\n" + AGENTS_MARK_E + "\n"
     if AGENTS_MARK_B in old and AGENTS_MARK_E in old:
         head = old.split(AGENTS_MARK_B, 1)[0]
@@ -185,18 +200,27 @@ class Acp:
         """写 AGENTS.md 的人格，并把绑定的技能镜像进 kimi 实际扫描的目录。"""
         cwd = self.agent["cwd"]
         os.makedirs(cwd, exist_ok=True)
-        block = "# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", ""))
-        block += (
-                 "\n## 给用户发文件\n\n**系统不会自动回收工作目录里的文件**，只有你显式执行脚本，\n"
-                 "文件才会出现在聊天里。所以：\n\n"
-                 "- 用户明确要文件（「把这个发给我」「把结果发我」）→ 在本目录执行：\n\n"
-                 "      ./aihub-send.sh <文件路径>        （bash / Git Bash）\n"
-                 "      aihub-send.cmd <文件路径>        （cmd / PowerShell）\n\n"
-                 "- 用户没提，就只回文字，不要主动上传。\n"
-                 "- 脚本会把文件挂在你这条回复下面，用户能直接下载；\n"
-                 "  要发给另一个 agent，加 `--to <agent_id>`，文件进对方暂存区。\n"
-                 "\n")
+        name = self.agent.get("name", "")
+        persona = (self.agent.get("prompt") or "").strip()
+        block = ("# %s\n\n%s\n" % (name, persona)) if persona else ""
         write_agents_md(cwd, self.agent.get("name", ""), block)
+        try:
+            skill_dir = os.path.join(cwd, "skills", "send-file")
+            os.makedirs(skill_dir, exist_ok=True)
+            cmds = ["    %s <文件路径>" % os.path.join(cwd, "aihub-send.sh")]
+            if os.name == "nt":
+                cmds.append("    %s <文件路径>" % os.path.join(cwd, "aihub-send.cmd"))
+            sk = ("---\nname: send-file\n"
+                  'description: "把文件发给用户，或发给另一个 agent。用户明确要文件时用。"\n'
+                  "---\n\n"
+                  "用户要文件（「把这个发给我」「把结果发我」）时，执行：\n\n"
+                  + "\n".join(cmds)
+                  + "\n\n发给另一个 agent 就在后面加 `--to <agent_id>`。\n"
+                  "用户没提文件，就别主动发。\n")
+            with open(os.path.join(skill_dir, "SKILL.md"), "w", encoding="utf-8") as f:
+                f.write(sk)
+        except OSError as e:
+            sys.stderr.write("write send-file skill failed: %r\n" % e)
         try:
             send_sh = os.path.join(cwd, "aihub-send.sh")
             with open(send_sh, "w", encoding="utf-8", newline="\n") as f:
@@ -506,6 +530,33 @@ def run_job(job, agent, files):
             pass
 
 
+def attach_files(text, cwd, files, fetch=None):
+    """附件是壳的事：@ 文件名的地方就地换成路径，没 @ 的列在末尾。
+    图片和文件一视同仁，不额外提示怎么读。"""
+    fetch = fetch or fetch_file
+    rest, seen = [], set()
+    for f in files or []:
+        try:
+            rel = fetch(f["id"], f["name"], cwd)
+        except Exception as e:
+            sys.stderr.write("fetch failed: %r\n" % e)
+            continue
+        full = rel if os.path.isabs(rel) else os.path.abspath(os.path.join(cwd, rel))
+        if full in seen:
+            continue
+        seen.add(full)
+        hit = False
+        for tok in (f.get("name") or "", os.path.splitext(f.get("name") or "")[0]):
+            if tok and ("@" + tok) in text:
+                text = text.replace("@" + tok, full)
+                hit = True
+        if not hit:
+            rest.append(full)
+    if rest:
+        text += "\n\n附件（本机路径）：\n" + "\n".join("- " + r for r in rest)
+    return text
+
+
 def _run_job(job, agent, files):
     wd = (job.get("workdir") or "").strip()
     agent["cwd"] = resolve_cwd({"id": agent["id"], "cwd": wd or agent.get("cwd")})
@@ -542,21 +593,7 @@ def _run_job(job, agent, files):
                     "技能正文在 skills/%s/SKILL.md，需要时读它再动手。\n\n任务：%s"
                     % (sk.get("name") or sid, (sk.get("when_to_use") or "")[:200], sid,
                        rest or "（用户没有补充说明，按技能默认流程执行）"))
-    refs = []
-    pics = []
-    for f in files or []:
-        try:
-            rel = fetch_file(f["id"], f["name"], cwd)
-            refs.append(rel)
-            if f.get("kind") == "image":
-                pics.append(rel)
-        except Exception as e:
-            sys.stderr.write("fetch failed: %r\n" % e)
-    if refs:
-        text += "\n\n参考文件（本机路径）：\n" + "\n".join("- " + r for r in refs)
-    if pics:
-        text += ("\n\n上面这些图片请先用 ReadMediaFile 打开看真实内容再回答，"
-                 "不要凭文件名或大小猜。")
+    text = attach_files(text, cwd, files)
     parts = [{"type": "text", "text": text}]
 
     state = {"buf": [], "last": time.time(), "cancel": False, "stalled": False,
