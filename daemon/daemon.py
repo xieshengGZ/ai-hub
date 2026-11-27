@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112719   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112720   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
@@ -778,16 +778,39 @@ def _parse_skill(path, sid):
     return {"id": sid, "name": name, "summary": summary, "when_to_use": when}
 
 
-def skill_store():
-    """本机共享技能库：~/aihub/skills/<id>/SKILL.md"""
+# kimi 自己也会扫这些目录；agent 用 npx 之类装的技能通常落在 .agents/skills
+USER_SKILL_DIRS = [
+    os.path.expanduser("~/.agents/skills"),
+    os.path.expanduser("~/.kimi-code/skills"),
+]
+
+
+def _scan_skill_dir(base, scope):
     out = []
-    if not os.path.isdir(STORE):
+    if not os.path.isdir(base):
         return out
-    for d in sorted(os.listdir(STORE)):
-        p = os.path.join(STORE, d, "SKILL.md")
+    try:
+        names = sorted(os.listdir(base))
+    except OSError:
+        return out
+    for d in names:
+        p = os.path.join(base, d, "SKILL.md")
         if os.path.isfile(p):
             sk = _parse_skill(p, d)
             if sk:
+                sk["scope"] = scope
+                out.append(sk)
+    return out
+
+
+def skill_store():
+    """本机 kimi 能看到的全部技能：共享库 + 用户级目录（agent 自己装的）。"""
+    out = _scan_skill_dir(STORE, "store")
+    seen = {x["id"] for x in out}
+    for base in USER_SKILL_DIRS:
+        for sk in _scan_skill_dir(base, "user"):
+            if sk["id"] not in seen:
+                seen.add(sk["id"])
                 out.append(sk)
     return out
 
@@ -811,6 +834,11 @@ def skill_installs():
                 pass
         if got:
             res[aid] = sorted(got)
+    # 用户级目录（~/.agents/skills 等）里的技能，这台机器上每个 agent 都能用
+    broad = [sk["id"] for sk in skill_store() if sk.get("scope") == "user"]
+    if broad:
+        for aid in res:
+            res[aid] = sorted(set(res[aid]) | set(broad))
     return res
 
 

@@ -646,14 +646,15 @@ def daemon_hb(d):
             if not sid:
                 continue
             keep.add(sid)
+            src = "user" if sk.get("scope") == "user" else "local"
             run("""INSERT INTO skills(id,name,summary,when_to_use,body,version,created,source,origin_host)
-                   VALUES(?,?,?,?,?,'1',?,'local',?)
+                   VALUES(?,?,?,?,?,'1',?,?,?)
                    ON CONFLICT(id, origin_host) DO UPDATE SET name=excluded.name,
-                     summary=excluded.summary, when_to_use=excluded.when_to_use, source='local'""",
+                     summary=excluded.summary, when_to_use=excluded.when_to_use, source=excluded.source""",
                 (sid, (sk.get("name") or sid)[:80], (sk.get("summary") or "")[:300],
-                 (sk.get("when_to_use") or "")[:300], "", now(), host_))
+                 (sk.get("when_to_use") or "")[:300], "", now(), src, host_))
             changed += 1
-        for r in rows("SELECT id FROM skills WHERE source='local' AND origin_host=?", (host_,)):
+        for r in rows("SELECT id FROM skills WHERE source IN ('local','user') AND origin_host=?", (host_,)):
             if r["id"] not in keep:
                 run("DELETE FROM skills WHERE id=? AND origin_host=?", (r["id"], host_))
                 run("DELETE FROM agent_skills WHERE skill=? AND agent IN "
