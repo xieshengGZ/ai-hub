@@ -1425,7 +1425,25 @@ function paintAgentInfo(){
   const model = CUR.model ? `<div class="kv"><b>模型</b><span>${esc(CUR.model)}</span></div>` : '';
   $('mInfo').innerHTML =
     `<div class="r1"><span class="host">${esc(CUR.name)} · ${esc(CUR.host || '')}</span></div>
-     <div class="kv"><b>目录</b><span title="点击复制" onclick="copyPath(this)">${esc(CUR.cwd || '—')}</span></div>${model}`;
+     <div class="kv"><b>目录</b><span title="点击复制" onclick="copyPath(this)">${esc(CUR.cwd || '—')}</span></div>
+     <div class="kv"><b>本轮在</b><span style="color:#0F5B63" onclick="setWorkdir()">${esc(CUR.workdir || '（默认目录）')} · 点击切换</span></div>${model}`;
+}
+
+async function setWorkdir(){
+  if(!CUR) return;
+  const cur = CUR.workdir || '';
+  const v = prompt('这个会话在哪个目录里干活？\n填绝对路径；留空表示回到 agent 的默认目录。\n\n' +
+                   '例如 /home/ubuntu/work/项目名 或 C:\\work\\项目名', cur);
+  if(v === null) return;
+  try{
+    const d = await api('api/agent/workdir', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({agent: CUR.id, path: v.trim()})});
+    CUR.workdir = d.workdir || '';
+    const a = AGENTS.find(x => x.id === CUR.id);
+    if(a) a.workdir = CUR.workdir;
+    paintAgentInfo();
+    toast(CUR.workdir ? ('已切到 ' + CUR.workdir + '，下一轮生效') : '已回到默认目录，下一轮生效');
+  }catch(e){ alert(e.message); }
 }
 
 function copyPath(el){

@@ -117,7 +117,7 @@ def init():
           id TEXT PRIMARY KEY, name TEXT, host TEXT, monogram TEXT, cwd TEXT,
           model TEXT, prompt TEXT, sort INTEGER DEFAULT 9, always_on INTEGER DEFAULT 0,
           managed_by TEXT, deleted INTEGER DEFAULT 0, pinned REAL DEFAULT 0,
-          status TEXT DEFAULT 'off', seen REAL DEFAULT 0);
+          workdir TEXT DEFAULT '', status TEXT DEFAULT 'off', seen REAL DEFAULT 0);
         CREATE TABLE IF NOT EXISTS messages(
           id INTEGER PRIMARY KEY AUTOINCREMENT, agent TEXT, role TEXT, text TEXT,
           ts REAL, status TEXT DEFAULT 'done', job TEXT, mode TEXT DEFAULT 'full');
@@ -125,7 +125,7 @@ def init():
           claimed REAL,
           id TEXT PRIMARY KEY, agent TEXT, user_msg INTEGER, agent_msg INTEGER,
           status TEXT DEFAULT 'queued', started REAL, ended REAL, error TEXT,
-          text TEXT DEFAULT '', daemon TEXT, origin TEXT);
+          text TEXT DEFAULT '', daemon TEXT, origin TEXT, cwd TEXT DEFAULT '');
         CREATE TABLE IF NOT EXISTS files(
           id TEXT PRIMARY KEY, name TEXT, size INTEGER, mime TEXT, agent TEXT,
           kind TEXT, path TEXT, ts REAL, msg INTEGER, stored TEXT);
@@ -159,7 +159,8 @@ def init():
         CREATE INDEX IF NOT EXISTS ix_msg_agent ON messages(agent, id);
         CREATE INDEX IF NOT EXISTS ix_job_status ON jobs(status);
         """)
-        for col in ("managed_by TEXT", "deleted INTEGER DEFAULT 0", "pinned REAL DEFAULT 0"):
+        for col in ("managed_by TEXT", "deleted INTEGER DEFAULT 0", "pinned REAL DEFAULT 0",
+                    "workdir TEXT DEFAULT ''"):
             try:
                 c.execute("ALTER TABLE agents ADD COLUMN %s" % col)
             except Exception:
@@ -199,12 +200,13 @@ def init():
                 c.execute("ALTER TABLE hosts ADD COLUMN %s" % col)
             except Exception:
                 pass
-        for col in ("managed_by TEXT", "deleted INTEGER DEFAULT 0", "pinned REAL DEFAULT 0"):
+        for col in ("managed_by TEXT", "deleted INTEGER DEFAULT 0", "pinned REAL DEFAULT 0",
+                    "workdir TEXT DEFAULT ''"):
             try:
                 c.execute("ALTER TABLE agents ADD COLUMN %s" % col)
             except Exception:
                 pass
-        for col in ("origin",):
+        for col in ("origin", "cwd"):
             try:
                 c.execute("ALTER TABLE jobs ADD COLUMN %s TEXT" % col)
             except Exception:
@@ -394,7 +396,7 @@ class Api(Exception):
 # ---------------- 业务 ----------------
 
 def bootstrap():
-    ags = rows("""SELECT id,name,host,monogram,status,seen,always_on,managed_by,cwd,model,pinned,
+    ags = rows("""SELECT id,name,host,monogram,status,seen,always_on,managed_by,cwd,model,pinned,workdir,
                          (SELECT COUNT(*) FROM agents x WHERE x.managed_by=agents.id AND x.deleted=0) AS team
                   FROM agents WHERE deleted=0
                   ORDER BY CASE WHEN pinned>0 THEN 0 ELSE 1 END, pinned DESC, sort, id""")
@@ -412,7 +414,7 @@ def bootstrap():
             "always_on": bool(a.get("always_on")),
             "pinned": a.get("pinned") or 0,
             "managed_by": a.get("managed_by"),
-            "cwd": a.get("cwd"),
+            "cwd": a.get("cwd"), "workdir": a.get("workdir") or "",
             "model": a.get("model") or "",
             "team": a.get("team") or 0,
         })
@@ -485,8 +487,10 @@ def session_send(agent, text, mode="full"):
     aid = run("INSERT INTO messages(agent,role,text,ts,status,mode) VALUES(?,?,?,?,?,?)",
               (agent, "agent", "", now(), "running", mode))
     jid = uuid.uuid4().hex[:12]
-    run("INSERT INTO jobs(id,agent,user_msg,agent_msg,status) VALUES(?,?,?,?,'queued')",
-        (jid, agent, uid, aid))
+    ag_wd = one("SELECT workdir FROM agents WHERE id=?", (agent,))
+    wd = (ag_wd["workdir"] if ag_wd and ag_wd["workdir"] else "")
+    run("INSERT INTO jobs(id,agent,user_msg,agent_msg,status,cwd) VALUES(?,?,?,?,'queued',?)",
+        (jid, agent, uid, aid, wd))
     with WAIT:
         WAIT.notify_all()
     bump()
@@ -542,7 +546,8 @@ def daemon_poll(wait_s, host=""):
                                    FROM skills s JOIN agent_skills a ON a.skill=s.id
                                    WHERE a.agent=? AND a.enabled=1""", (ag["id"],))
                 return {"job": {"id": j["id"], "text": one("SELECT text FROM messages WHERE id=?",
-                                                           (j["user_msg"],))["text"]},
+                                                           (j["user_msg"],))["text"],
+                                "workdir": (j["cwd"] if "cwd" in j.keys() and j["cwd"] else "")},
                         "agent": {"id": ag["id"], "name": ag["name"], "cwd": ag["cwd"],
                                   "prompt": ag["prompt"], "model": ag["model"],
                                   "model_cfg": model_cfg_for(ag["model"]), "skills": skills},
@@ -1502,6 +1507,17 @@ class Handler(BaseHTTPRequestHandler):
                      mid_, d.get("prompt") or "",
                      sort, 1 if d.get("always_on") else 0))
                 bump(); return self._json({"ok": True, "agent": aid})
+            if p == "/api/agent/workdir":
+                d = self._body()
+                aid = d.get("agent", "")
+                wd = (d.get("path") or "").strip()
+                if not one("SELECT id FROM agents WHERE id=? AND deleted=0", (aid,)):
+                    raise Api(404, "没有这个 agent")
+                if wd and not (os.path.isabs(wd) or (len(wd) > 1 and wd[1] == ":")):
+                    raise Api(400, "要填绝对路径，例如 /home/ubuntu/work/foo 或 C:\\work\\foo")
+                run("UPDATE agents SET workdir=? WHERE id=?", (wd, aid))
+                bump()
+                return self._json({"ok": True, "workdir": wd})
             if p == "/api/agent/restore":
                 d = self._body()
                 run("UPDATE agents SET deleted=0 WHERE id=?", (d.get("agent", ""),))

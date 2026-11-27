@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112707   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112708   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
@@ -63,6 +63,13 @@ def kimi_argv():
     if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
         return ["cmd", "/c", exe]
     return [exe]
+
+
+def sid_path(agent):
+    """会话 id 按「agent + 工作目录」分开存，切目录回来还能续上。"""
+    cwd = os.path.realpath(agent.get("cwd") or "")
+    tag = hashlib.sha1(cwd.encode("utf-8", "replace")).hexdigest()[:8]
+    return os.path.join(LOG_DIR, "sid-%s-%s.txt" % (agent.get("id") or "agent", tag))
 
 
 def py_exe():
@@ -296,7 +303,7 @@ class Acp:
                               {"sessionId": None, "optionId": "model", "value": model})
                 except Exception as e:
                     sys.stderr.write("set model failed: %r\n" % e)
-        sid_file = os.path.join(LOG_DIR, "sid-%s.txt" % self.agent["id"])
+        sid_file = sid_path(self.agent)
         sid = ""
         if os.path.exists(sid_file):
             sid = open(sid_file, encoding="utf-8").read().strip()
@@ -458,13 +465,20 @@ class Acp:
 
 
 def acp_for(agent):
+    cwd = resolve_cwd(agent)
+    agent["cwd"] = cwd
     with LOCK:
         a = PROCS.get(agent["id"])
+        if a is not None and (a.agent.get("cwd") or "") != cwd:
+            # 换了工作目录：会话是跟目录绑的，旧实例留着没意义
+            sys.stderr.write("工作目录变化 -> %s，重建实例 %s\n" % (cwd, agent["id"]))
+            PROCS.pop(agent["id"], None)
+            a.kill()
+            a = None
         if a is None:
             a = Acp(agent)
             PROCS[agent["id"]] = a
         else:
-            agent["cwd"] = resolve_cwd(agent)
             a.agent = agent          # 每次任务刷新配置（提示词、技能）
         return a
 
@@ -493,7 +507,8 @@ def run_job(job, agent, files):
 
 
 def _run_job(job, agent, files):
-    agent["cwd"] = resolve_cwd(agent)   # Hub 上 cwd 留空时按 id 落盘，不能带着空串往下走
+    wd = (job.get("workdir") or "").strip()
+    agent["cwd"] = resolve_cwd({"id": agent["id"], "cwd": wd or agent.get("cwd")})
     jid, cwd, started = job["id"], agent["cwd"], time.time()
     with LOCK:
         if jid in RUNNING_JOBS:
@@ -598,7 +613,7 @@ def _run_job(job, agent, files):
                 a.kill()
                 a.sid = ""
                 try:
-                    os.remove(os.path.join(LOG_DIR, "sid-%s.txt" % agent["id"]))
+                    os.remove(sid_path(agent))
                 except OSError:
                     pass
                 stop = a.prompt_stream(parts, on_chunk, lambda: state["cancel"],
@@ -1098,7 +1113,12 @@ def refresh_agents():
                             sys.stderr.write("跳过清除（不在本机 agents 目录下）: %r agent=%s\n"
                                              % (cwd, aid_))
                         try:
-                            os.remove(os.path.join(LOG_DIR, "sid-%s.txt" % aid_))
+                            for f_ in os.listdir(LOG_DIR):
+                                if f_.startswith("sid-%s-" % aid_) or f_ == "sid-%s.txt" % aid_:
+                                    try:
+                                        os.remove(os.path.join(LOG_DIR, f_))
+                                    except OSError:
+                                        pass
                         except OSError:
                             pass
                     http("/api/daemon/op_done", {"id": op["id"]}, timeout=15)
