@@ -11,6 +11,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -55,6 +56,24 @@ def main():
     try:
         base = "http://127.0.0.1:%d" % port
         wait_health(base, proc)
+
+        def anon_status(method, path, body=None):
+            req = urllib.request.Request(
+                base + path,
+                data=json.dumps(body).encode() if body is not None else None,
+                headers={"Content-Type": "application/json"} if body is not None else {},
+                method=method)
+            try:
+                with urllib.request.urlopen(req, timeout=10) as r:
+                    return r.status
+            except urllib.error.HTTPError as e:
+                return e.code
+
+        assert anon_status("GET", "/api/health") == 200
+        assert anon_status("GET", "/api/bootstrap") == 401
+        assert anon_status("GET", "/api/host/token", {"name": "box"}) == 401
+        assert anon_status("POST", "/api/send", {"agent": "t1", "text": "x"}) == 401
+        assert anon_status("POST", "/api/host/rotate", {"name": "box"}) == 401
 
         cj = http.cookiejar.CookieJar()
         opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(cj))

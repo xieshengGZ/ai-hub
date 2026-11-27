@@ -763,6 +763,12 @@ class Handler(BaseHTTPRequestHandler):
         if p in ("/", "/hub", "/index.html"):
             return self._static("index.html")
         try:
+            if (p not in ("/api/health", "/api/webver", "/api/authinfo")
+                    and p not in ("/api/monitor/push.sh", "/api/host/install.sh",
+                                  "/api/host/install.ps1", "/api/host/daemon.py")
+                    and not p.startswith("/api/daemon/")):
+                if not self._authed():
+                    return
             if p == "/api/bootstrap":
                 if not self._authed():
                     return
@@ -858,6 +864,8 @@ class Handler(BaseHTTPRequestHandler):
                                 ORDER BY ts DESC LIMIT 10""", (like,))
                 return self._json({"hits": hits, "files": files})
             if p == "/api/task/retry":
+                if not self._authed():
+                    return
                 d = self._body()
                 j = one("SELECT * FROM jobs WHERE id=?", (d.get("job", ""),))
                 if not j:
@@ -1108,6 +1116,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header("Content-Length", "0")
                 self.end_headers()
                 return
+            if not p.startswith("/api/daemon/") and p != "/api/monitor/ingest":
+                if not self._authed():
+                    return
             if p == "/api/totp/setup":
                 if not self._authed():
                     return
