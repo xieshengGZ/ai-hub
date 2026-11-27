@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112720   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112723   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
@@ -803,16 +803,31 @@ def _scan_skill_dir(base, scope):
     return out
 
 
-def skill_store():
-    """本机 kimi 能看到的全部技能：共享库 + 用户级目录（agent 自己装的）。"""
-    out = _scan_skill_dir(STORE, "store")
-    seen = {x["id"] for x in out}
+def adopt_user_skills():
+    """agent 自己装在 ~/.agents/skills 的技能收进本机共享库，
+    这样全机只有一个列表，安装/卸载还是「链接进会话」那一套。"""
+    moved = []
     for base in USER_SKILL_DIRS:
         for sk in _scan_skill_dir(base, "user"):
-            if sk["id"] not in seen:
-                seen.add(sk["id"])
-                out.append(sk)
-    return out
+            if sk["id"] == "send-file":
+                continue
+            dst = os.path.join(STORE, sk["id"])
+            if os.path.isdir(dst):
+                continue
+            try:
+                shutil.copytree(os.path.join(base, sk["id"]), dst)
+                moved.append(sk["id"])
+            except OSError as e:
+                sys.stderr.write("adopt skill %s failed: %r\n" % (sk["id"], e))
+    if moved:
+        sys.stderr.write("adopted skills: %s\n" % ", ".join(moved))
+    return moved
+
+
+def skill_store():
+    """本机共享技能库：~/aihub/skills/<id>/SKILL.md（含从用户级目录收编的）"""
+    adopt_user_skills()
+    return [x for x in _scan_skill_dir(STORE, "store") if x["id"] != "send-file"]
 
 
 def skill_installs():
@@ -834,11 +849,6 @@ def skill_installs():
                 pass
         if got:
             res[aid] = sorted(got)
-    # 用户级目录（~/.agents/skills 等）里的技能，这台机器上每个 agent 都能用
-    broad = [sk["id"] for sk in skill_store() if sk.get("scope") == "user"]
-    if broad:
-        for aid in res:
-            res[aid] = sorted(set(res[aid]) | set(broad))
     return res
 
 
@@ -1023,6 +1033,8 @@ def adopt_agents_skills():
         for d in os.listdir(base):
             src = os.path.join(base, d)
             if not os.path.isfile(os.path.join(src, "SKILL.md")):
+                continue
+            if d == "send-file":
                 continue
             tgt = os.path.join(STORE, d)
             if os.path.exists(tgt) or d in _tombstones():

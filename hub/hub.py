@@ -195,7 +195,8 @@ def init():
                 c.execute("ALTER TABLE skills ADD COLUMN %s" % col)
             except Exception:
                 pass
-        for col in ("token TEXT", "created REAL DEFAULT 0", "itoken TEXT", "iexp REAL"):
+        for col in ("token TEXT", "created REAL DEFAULT 0", "itoken TEXT", "iexp REAL",
+                    "skjson TEXT"):
             try:
                 c.execute("ALTER TABLE hosts ADD COLUMN %s" % col)
             except Exception:
@@ -662,17 +663,9 @@ def daemon_hb(d):
                 changed += 1
     inst = d.get("skill_installs")
     if inst is not None:
-        host_skills = [r["id"] for r in rows("SELECT id FROM skills WHERE origin_host=?", (host_,))]
-        for aid in [r["id"] for r in rows("SELECT id FROM agents WHERE host=? AND deleted=0", (host_,))]:
-            want = set(inst.get(aid) or []) & set(host_skills)
-            have = set(r["skill"] for r in rows("SELECT skill FROM agent_skills WHERE agent=?", (aid,))) & set(host_skills)
-            for s2 in want - have:
-                run("INSERT INTO agent_skills(agent,skill,enabled) VALUES(?,?,1) "
-                    "ON CONFLICT(agent,skill) DO UPDATE SET enabled=1", (aid, s2))
-                changed += 1
-            for s2 in have - want:
-                run("DELETE FROM agent_skills WHERE agent=? AND skill=?", (aid, s2))
-                changed += 1
+        # daemon 说谁装了什么就存什么，中枢不再二次推导（避免和磁盘漂移）
+        run("UPDATE hosts SET skjson=? WHERE name=?", (json.dumps(inst, ensure_ascii=False), host_))
+        changed += 1
     if changed:
         bump()
     return {"ok": True}
@@ -991,13 +984,19 @@ class Handler(BaseHTTPRequestHandler):
                 host = (one("SELECT host FROM agents WHERE id=?", (ag,)) or {}).get("host", "")
                 allsk = rows("""SELECT id,name,summary,when_to_use,version,source,origin_host
                                 FROM skills WHERE origin_host=? ORDER BY id""", (host,))
-                installed = set(r["skill"] for r in rows(
-                    "SELECT skill FROM agent_skills WHERE agent=? AND enabled=1", (ag,))) if ag else set()
+                rep = {}
+                hj = one("SELECT skjson FROM hosts WHERE name=?", (host,))
+                try:
+                    rep = json.loads((hj or {})["skjson"] or "{}")
+                except Exception:
+                    rep = {}
+                mine_ = set(rep.get(ag) or []) if ag else set()
                 counts = {}
-                for r in rows("SELECT skill, COUNT(*) n FROM agent_skills WHERE enabled=1 GROUP BY skill"):
-                    counts[r["skill"]] = r["n"]
+                for _aid, lst in rep.items():
+                    for sk_ in lst:
+                        counts[sk_] = counts.get(sk_, 0) + 1
                 for k in allsk:
-                    k["enabled"] = k["id"] in installed
+                    k["enabled"] = k["id"] in mine_
                     k["installed_count"] = counts.get(k["id"], 0)
                 return self._json({"skills": allsk, "host": host})
             if p == "/api/files":

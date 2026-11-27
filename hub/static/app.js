@@ -1146,18 +1146,15 @@ async function loadSkills(){
   const on = ss.filter(s => s.enabled);
   const off = ss.filter(s => !s.enabled);
   SKILLS = on; SKILL_TOTAL = ss.length; paintSkillCount();
-  const tagOf = (s) => s.source === 'user'
-    ? '<span style="color:#B07C33"> · 机器级（agent 自己装的）</span>' : '';
   const row = (s, right) =>
-    `<div class="item"><span class="nm">/${esc(s.id)} · ${esc(s.name)}${tagOf(s)}<br>` +
+    `<div class="item"><span class="nm">/${esc(s.id)} · ${esc(s.name)}<br>` +
     `<span style="font-size:12px;color:#8B949A">${esc(s.summary || '')}</span></span>${right}</div>`;
   const sec = (title, arr) => arr.length
     ? `<div class="hint" style="padding:10px 16px 4px">${title}（${arr.length}）</div>` + arr.join('')
     : '';
-  const installed = sec('已安装', on.map(s => row(s, s.source === 'user'
-    ? '<span class="r" style="color:#8B949A">机器级</span>'
-    : `<span class="r" style="color:#A33A2B" onclick="skillOp('uninstall','${s.id}')">卸载</span>`)));
-  const available = sec('本机可用', off.map(s => row(s,
+  const installed = sec('已安装到本会话', on.map(s => row(s,
+    `<span class="r" style="color:#A33A2B" onclick="skillOp('uninstall','${s.id}')">卸载</span>`)));
+  const available = sec('这台机器上有，本会话未装', off.map(s => row(s,
     `<span class="r" style="color:#0F5B63" onclick="skillOp('install','${s.id}')">安装</span>` +
     (s.installed_count ? '' :
       `<span class="r" style="color:#A33A2B;margin-left:12px" onclick="skillOp('delete','${s.id}')">删除</span>`))));
