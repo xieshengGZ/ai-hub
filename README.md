@@ -150,15 +150,11 @@ MIT，见 `LICENSE`。
 
 ## 把 agent 的工作目录指向你自己的项目
 
-新建 agent 时把「工作目录」填成项目路径即可——技能、命令、读写都落在这个目录里。Daemon 会往目录里放几样自己的东西，建议在你的项目 `.gitignore` 里加：
+新建 agent 时把「工作目录」填成项目路径即可——技能、命令、读写都落在这个目录里。Daemon 自己的东西不放在这里：
 
-```
-.kimi-home/
-.aihub-inbox/
-.aihub-sent
-skills/
-aihub-send.sh
-aihub-send.cmd
-```
+| 位置 | 内容 |
+|---|---|
+| `<项目>/` | 只有你的文件；`AGENTS.md` 只在写了人格时存在；`.aihub-inbox/` 存你上传的附件 |
+| `~/aihub/state/<agent>-<目录 hash>/` | `bin/` 发文件脚本、`skills/` 技能链接、`home/` 模型配置与会话 |
 
-`AGENTS.md` 不会覆盖你自己的内容：Daemon 只维护 `<!-- aihub:begin -->` 与 `<!-- aihub:end -->` 之间的段落，标记外的文字原样保留。
+`.aihub-inbox/` 是唯一建议加进 `.gitignore` 的：`echo .aihub-inbox/ >> .gitignore`。

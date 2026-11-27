@@ -25,10 +25,10 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112709   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112711   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
-ACTIVE, KNOWN, WHERES = set(), set(), {}
+ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
 RUNNING_JOBS = set()
 LOCK_SOCK = None
 KIMI_CONF = (CONF.get("kimi") or "").strip()
@@ -63,6 +63,15 @@ def kimi_argv():
     if os.name == "nt" and exe.lower().endswith((".cmd", ".bat")):
         return ["cmd", "/c", exe]
     return [exe]
+
+
+def state_dir(cwd, agent_id):
+    """壳自己的状态放这里：脚本、技能链接、模型配置、会话、已发清单。
+    项目目录里只留用户自己的文件（和人格 AGENTS.md）。"""
+    real = os.path.realpath(os.path.expanduser(cwd or "~"))
+    tag = hashlib.sha1(real.encode("utf-8", "replace")).hexdigest()[:8]
+    return os.path.join(os.path.expanduser("~"), "aihub", "state",
+                        "%s-%s" % (agent_id or "agent", tag))
 
 
 def sid_path(agent):
@@ -195,21 +204,51 @@ class Acp:
         cwd = resolve_cwd(agent)
         agent["cwd"] = cwd
         os.makedirs(cwd, exist_ok=True)
+        self.state = state_dir(cwd, agent.get("id"))
 
     def materialize_skills(self):
         """写 AGENTS.md 的人格，并把绑定的技能镜像进 kimi 实际扫描的目录。"""
         cwd = self.agent["cwd"]
+        st = self.state
         os.makedirs(cwd, exist_ok=True)
+        os.makedirs(os.path.join(st, "bin"), exist_ok=True)
+        os.makedirs(os.path.join(st, "skills"), exist_ok=True)
+        # 把以前散在项目目录里的壳文件搬进 state（只搬一次）
+        for src, dst in ((os.path.join(cwd, ".kimi-home"), os.path.join(st, "home")),
+                         (os.path.join(cwd, "skills"), os.path.join(st, "skills")),
+                         (os.path.join(cwd, ".aihub-sent"), os.path.join(st, "sent")),
+                         (os.path.join(cwd, "aihub-send.sh"), os.path.join(st, "bin", "aihub-send.sh")),
+                         (os.path.join(cwd, "aihub-send.cmd"), os.path.join(st, "bin", "aihub-send.cmd"))):
+            if not os.path.exists(src):
+                continue
+            try:
+                if os.path.isdir(dst) and not os.path.islink(dst):
+                    for n in os.listdir(src):
+                        t = os.path.join(dst, n)
+                        if not os.path.exists(t):
+                            shutil.move(os.path.join(src, n), t)
+                    shutil.rmtree(src, ignore_errors=True)
+                elif not os.path.exists(dst):
+                    shutil.move(src, dst)
+                else:
+                    os.remove(src)
+            except OSError as e:
+                sys.stderr.write("migrate %s -> %s failed: %r\n" % (src, dst, e))
+        try:
+            if os.path.isdir(os.path.join(cwd, "skills")) and not os.listdir(os.path.join(cwd, "skills")):
+                os.rmdir(os.path.join(cwd, "skills"))
+        except OSError:
+            pass
         name = self.agent.get("name", "")
         persona = (self.agent.get("prompt") or "").strip()
         block = ("# %s\n\n%s\n" % (name, persona)) if persona else ""
         write_agents_md(cwd, self.agent.get("name", ""), block)
         try:
-            skill_dir = os.path.join(cwd, "skills", "send-file")
+            skill_dir = os.path.join(self.state, "skills", "send-file")
             os.makedirs(skill_dir, exist_ok=True)
-            cmds = ["    %s <文件路径>" % os.path.join(cwd, "aihub-send.sh")]
+            cmds = ["    %s <文件路径>" % os.path.join(self.state, "bin", "aihub-send.sh")]
             if os.name == "nt":
-                cmds.append("    %s <文件路径>" % os.path.join(cwd, "aihub-send.cmd"))
+                cmds.append("    %s <文件路径>" % os.path.join(self.state, "bin", "aihub-send.cmd"))
             sk = ("---\nname: send-file\n"
                   'description: "把文件发给用户，或发给另一个 agent。用户明确要文件时用。"\n'
                   "---\n\n"
@@ -222,11 +261,11 @@ class Acp:
         except OSError as e:
             sys.stderr.write("write send-file skill failed: %r\n" % e)
         try:
-            send_sh = os.path.join(cwd, "aihub-send.sh")
+            send_sh = os.path.join(self.state, "bin", "aihub-send.sh")
             with open(send_sh, "w", encoding="utf-8", newline="\n") as f:
                 f.write(SEND_SH)
             os.chmod(send_sh, 0o755)
-            send_cmd = os.path.join(cwd, "aihub-send.cmd")
+            send_cmd = os.path.join(self.state, "bin", "aihub-send.cmd")
             with open(send_cmd, "w", encoding="ascii", newline="\r\n") as f:
                 f.write(SEND_CMD.replace("@PY@", py_exe())
                         .replace("@DAEMON@", os.path.abspath(__file__))
@@ -235,7 +274,7 @@ class Acp:
             sys.stderr.write("write aihub-send failed: %r\n" % e)
         try:
             home, _ = self._ensure_model_home()
-            sync_home_skills(home, cwd)
+            sync_home_skills(home, os.path.join(self.state, "skills"))
         except Exception as e:
             sys.stderr.write("skills mirror failed: %r\n" % e)
 
@@ -244,7 +283,7 @@ class Acp:
         cfg = self.agent.get("model_cfg") or None
         if not cfg:
             return None, []
-        home = os.path.join(self.agent["cwd"], ".kimi-home")
+        home = os.path.join(self.state, "home")
         os.makedirs(home, exist_ok=True)
         path = os.path.join(home, "config.toml")
 
@@ -300,7 +339,7 @@ class Acp:
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
             kw["startupinfo"] = si
-        sk_dir = os.path.join(self.agent["cwd"], "skills")
+        sk_dir = os.path.join(self.state, "skills")
         os.makedirs(sk_dir, exist_ok=True)
         home, margs = home0, margs0
         env = dict(os.environ)
@@ -735,7 +774,7 @@ def skill_installs():
     """{agent: [已安装的 skill id]}，判定方式是链接指向共享库"""
     res = {}
     with LOCK:
-        cwds = dict(WHERES)
+        cwds = dict(STATES)
     for aid, cwd in cwds.items():
         base = os.path.join(cwd or "", "skills")
         if not cwd or not os.path.isdir(base):
@@ -814,12 +853,12 @@ def _unlink_dir(p):
             raise
 
 
-def sync_home_skills(home, cwd):
+def sync_home_skills(home, skills_src):
     """ACP 只扫描 $KIMI_CODE_HOME/skills（--skills-dir 在 acp 下不生效），
-    把 agent 绑定的技能镜像进去；每轮调用，跟上技能的绑定与解绑。"""
+    把 state 里的技能目录镜像进去；每轮调用，跟上技能的绑定与解绑。"""
     if not home:
         return
-    src, dst = os.path.join(cwd, "skills"), os.path.join(home, "skills")
+    src, dst = skills_src, os.path.join(home, "skills")
     try:
         os.makedirs(dst, exist_ok=True)
     except OSError as e:
@@ -893,7 +932,7 @@ def migrate_agent_skill_dirs():
     if _AGENT_MIGRATED[0]:
         return
     with LOCK:
-        cwds = dict(WHERES)
+        cwds = dict(STATES)
     if not cwds:
         return
     for aid, cwd in cwds.items():
@@ -928,7 +967,7 @@ def adopt_agents_skills():
         return
     _LAST_ADOPT[0] = time.time()
     with LOCK:
-        cwds = dict(WHERES)
+        cwds = dict(STATES)
     for aid, cwd in cwds.items():
         base = os.path.join(cwd or "", ".agents", "skills")
         if not os.path.isdir(base):
@@ -1079,6 +1118,7 @@ def refresh_agents():
             for a in d.get("agents", []):
                 KNOWN.add(a["id"])
                 WHERES[a["id"]] = a.get("cwd")
+                STATES[a["id"]] = state_dir(a.get("cwd"), a.get("id"))
                 if a.get("always_on"):
                     ALWAYS.add(a["id"])
                     if a["id"] not in PROCS:
@@ -1133,9 +1173,9 @@ def refresh_agents():
                         sid = op.get("path") or ""
                         aid = op.get("agent") or ""
                         if op["op"] == "skill_install":
-                            msg = link_skill(WHERES.get(aid) or "", sid)
+                            msg = link_skill(STATES.get(aid) or WHERES.get(aid) or "", sid)
                         elif op["op"] == "skill_uninstall":
-                            msg = unlink_skill(WHERES.get(aid) or "", sid)
+                            msg = unlink_skill(STATES.get(aid) or WHERES.get(aid) or "", sid)
                         else:
                             msg = delete_store_skill(sid)
                         sys.stderr.write("skill op %s %s/%s: %s\n" % (op["op"], aid, sid, msg))
@@ -1147,8 +1187,12 @@ def refresh_agents():
                             shutil.rmtree(cwd, ignore_errors=True)
                             sys.stderr.write("已清除目录: %s\n" % cwd)
                         else:
-                            sys.stderr.write("跳过清除（不在本机 agents 目录下）: %r agent=%s\n"
+                            sys.stderr.write("项目目录保留（不在本机 agents 目录下）: %r agent=%s\n"
                                              % (cwd, aid_))
+                        st_ = STATES.get(aid_) or state_dir(op.get("path") or cwd, aid_)
+                        if os.path.isdir(st_):
+                            shutil.rmtree(st_, ignore_errors=True)
+                            sys.stderr.write("已清除状态目录: %s\n" % st_)
                         try:
                             for f_ in os.listdir(LOG_DIR):
                                 if f_.startswith("sid-%s-" % aid_) or f_ == "sid-%s.txt" % aid_:
