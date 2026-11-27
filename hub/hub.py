@@ -1520,8 +1520,9 @@ class Handler(BaseHTTPRequestHandler):
                     c.execute("DELETE FROM files WHERE agent=?", (aid,))
                     c.execute("DELETE FROM usage_daily WHERE agent=?", (aid,))
                     c.execute("DELETE FROM agents WHERE id=?", (aid,))
-                    c.execute("INSERT INTO daemon_ops(agent, op, path, ts) VALUES(?,?,?,?)",
-                              (aid, "purge_dir", ag["cwd"], now()))
+                    # 必须绑定主机：否则任何一台 daemon 都能领走，在它自己的机器上找不到目录就标完成
+                    c.execute("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
+                              (aid, "purge_dir", ag["cwd"], now(), ag["host"] or ""))
                     c.commit()
                 bump(); return self._json({"ok": True})
             if p == "/api/team":

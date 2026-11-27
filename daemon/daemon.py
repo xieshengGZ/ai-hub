@@ -25,13 +25,28 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112705   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112706   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
 RUNNING_JOBS = set()
 LOCK_SOCK = None
 KIMI_CONF = (CONF.get("kimi") or "").strip()
+
+
+AGENTS_ROOT = os.path.join(os.path.expanduser("~"), "aihub", "agents")
+
+
+def under_agents(p):
+    """只允许删本机 agents 目录下的东西；Windows 上大小写不敏感。"""
+    try:
+        root = os.path.realpath(AGENTS_ROOT)
+        real = os.path.realpath(p)
+        if os.name == "nt":
+            root, real = root.lower(), real.lower()
+        return os.path.commonpath([root, real]) == root and real != root
+    except (ValueError, OSError):
+        return False
 
 
 def resolve_cwd(agent):
@@ -1042,12 +1057,18 @@ def refresh_agents():
                         sys.stderr.write("skill op %s %s/%s: %s\n" % (op["op"], aid, sid, msg))
                         sys.stderr.flush()
                     if op["op"] == "purge_dir":
-                        cwd = op.get("path") or WHERES.get(op["agent"])
-                        if cwd and os.path.isdir(cwd) and cwd.startswith("/home/ubuntu/aihub/agents/"):
+                        aid_ = op["agent"]
+                        cwd = op.get("path") or WHERES.get(aid_) or resolve_cwd({"id": aid_})
+                        if cwd and os.path.isdir(cwd) and under_agents(cwd):
                             shutil.rmtree(cwd, ignore_errors=True)
                             sys.stderr.write("已清除目录: %s\n" % cwd)
                         else:
-                            sys.stderr.write("未找到目录，agent=%s\n" % op["agent"])
+                            sys.stderr.write("跳过清除（不在本机 agents 目录下）: %r agent=%s\n"
+                                             % (cwd, aid_))
+                        try:
+                            os.remove(os.path.join(LOG_DIR, "sid-%s.txt" % aid_))
+                        except OSError:
+                            pass
                     http("/api/daemon/op_done", {"id": op["id"]}, timeout=15)
                 except Exception as e:
                     sys.stderr.write("op failed: %r\n" % e)
