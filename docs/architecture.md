@@ -61,7 +61,7 @@ usage_daily agent, day, jobs, ms
   .aihub-inbox/            本轮附件落地位置（相对路径写进提示词）
 ```
 
-Daemon 启动 `kimi` 时传 `--skills-dir <agent cwd>/skills`，Kimi 只认这个目录；本机共享库是 `~/aihub/skills/`，安装/卸载技能就是建/删软链。Hub 的 `skills` 表是心跳上报的缓存，不是源。
+Daemon 启动 `kimi` 时仍传 `--skills-dir <agent cwd>/skills`，但 ACP 模式并不读它；真正生效的是 `$KIMI_CODE_HOME/skills`（即 `<agent cwd>/.kimi-home/skills`）。Daemon 每轮把绑定的技能软链镜像到那里，本机共享库 `~/aihub/skills/` 仍是源，安装/卸载技能就是建/删 `<agent cwd>/skills/<id>`。Hub 的 `skills` 表是心跳上报的缓存，不是源。
 
 ## 为什么 Daemon 只做出站连接
 

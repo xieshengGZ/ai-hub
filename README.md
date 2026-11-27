@@ -17,7 +17,7 @@
 - **附件**：拍照 / 相册 / 文件三种入口，落盘到 `inbox/<agent>/<日期>/`，发消息时把未取走的附件（最多 8 个，正文提到的优先）带给 agent；图片 agent 用 `ReadMediaFile` 真读。
 - **预览**：图片、PDF、音视频、文本 / Markdown / 代码，点开即看，也能下载。
 - **Markdown**：标题、列表、表格、代码块、引用，聊天与文档预览都按 Markdown 渲染。
-- **技能包**：给 agent 绑定 `SKILL.md`，Daemon 从本机共享库 `~/aihub/skills/` 软链到工作目录的 `skills/`，Kimi 用 `--skills-dir` 加载；`AGENTS.md` 只写人格与发文件说明。
+- **技能包**：给 agent 绑定 `SKILL.md`，Daemon 从本机共享库 `~/aihub/skills/` 软链到工作目录的 `skills/`，再镜像进 agent 的 `KIMI_CODE_HOME/skills`（ACP 实际扫描的目录）；`AGENTS.md` 只写人格与发文件说明。
 - **文件回传**：agent 显式执行 `aihub-send.sh` / `aihub-send.cmd` 才上传，挂在那条回复下面；也能 `--to <agent>` 投给别的 agent。
 - **一键接入**：Linux 一行 `curl ... | bash`，Windows 一行 PowerShell，自动注册服务/计划任务。
 - **PWA**：手机添加到主屏幕，像原生应用一样用。

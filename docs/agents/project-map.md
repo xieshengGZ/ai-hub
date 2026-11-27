@@ -40,10 +40,9 @@ The two-phase claim (`claimed`, then `start`) exists so a lost poll response can
 
 - The source of truth is the host's `~/aihub/skills/<id>/SKILL.md`.
 - Installing for an agent creates a symlink at `<agent cwd>/skills/<id>`; uninstalling removes it.
-- The Daemon starts Kimi with `--skills-dir <agent cwd>/skills`, so only that directory is scanned.
+- ACP ignores `--skills-dir`; it scans `$KIMI_CODE_HOME/skills` (that is `<agent cwd>/.kimi-home/skills`). `materialize_skills` mirrors the bound skills there via `sync_home_skills` on every job, so binding or unbinding takes effect without restarting the ACP process; the catalog is re-read per prompt.
 - The Hub's `skills` table is a cache fed by heartbeat (`skill_store`, `skill_installs`), not the source.
 - A chat message starting with `/<skill-id>` is translated into a skill instruction in `_run_job`; it reads `skills/<id>/SKILL.md` and does not depend on the ACP skill catalog.
-- In practice, restarting the ACP process alone does not make a newly installed skill visible to the model's skill list, because `session/load` resumes the saved session. A fresh session is the reliable way to pick up new skills.
 
 ## Gotchas
 

@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112704   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112705   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
@@ -128,7 +128,7 @@ class Acp:
         os.makedirs(cwd, exist_ok=True)
 
     def materialize_skills(self):
-        """只写 AGENTS.md 的人格；技能由共享库链接提供，kimi 用 --skills-dir 只认那个目录。"""
+        """写 AGENTS.md 的人格，并把绑定的技能镜像进 kimi 实际扫描的目录。"""
         cwd = self.agent["cwd"]
         os.makedirs(cwd, exist_ok=True)
         lines = ["# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", "")),
@@ -155,6 +155,11 @@ class Acp:
                         .replace("@AGENT@", self.agent["id"]))
         except OSError as e:
             sys.stderr.write("write aihub-send failed: %r\n" % e)
+        try:
+            home, _ = self._ensure_model_home()
+            sync_home_skills(home, cwd)
+        except Exception as e:
+            sys.stderr.write("skills mirror failed: %r\n" % e)
 
     def _ensure_model_home(self):
         """选了中枢模型：写 <cwd>/.kimi-home 并用它；没选：沿用机器默认配置。"""
@@ -680,6 +685,83 @@ def unlink_skill(cwd, sid):
         except OSError:
             shutil.rmtree(dst, ignore_errors=True)
     return "ok"
+
+
+def _link_dir(src, dst):
+    if os.name == "nt":
+        r = subprocess.run(["cmd", "/c", "mklink", "/J", dst, src],
+                           capture_output=True, text=True)
+        if r.returncode != 0:
+            raise OSError((r.stderr or r.stdout or "mklink failed").strip()[:200])
+    else:
+        os.symlink(src, dst, target_is_directory=True)
+
+
+def _link_target(p):
+    """软链或 junction 指向的目标；普通目录返回 None。"""
+    try:
+        return os.readlink(p)
+    except OSError:
+        return None
+
+
+def _unlink_dir(p):
+    try:
+        os.unlink(p)
+    except OSError:
+        if os.name == "nt":
+            os.rmdir(p)            # junction 只能 rmdir
+        else:
+            raise
+
+
+def sync_home_skills(home, cwd):
+    """ACP 只扫描 $KIMI_CODE_HOME/skills（--skills-dir 在 acp 下不生效），
+    把 agent 绑定的技能镜像进去；每轮调用，跟上技能的绑定与解绑。"""
+    if not home:
+        return
+    src, dst = os.path.join(cwd, "skills"), os.path.join(home, "skills")
+    try:
+        os.makedirs(dst, exist_ok=True)
+    except OSError as e:
+        sys.stderr.write("skills mirror: mkdir %s failed: %r\n" % (dst, e))
+        return
+    want = {}
+    if os.path.isdir(src):
+        for n in os.listdir(src):
+            p = os.path.join(src, n)
+            if os.path.isdir(p):
+                want[n] = os.path.realpath(p)
+    for n, target in want.items():
+        p = os.path.join(dst, n)
+        cur = _link_target(p)
+        try:
+            if cur is not None:
+                abs_cur = cur if os.path.isabs(cur) else os.path.join(dst, cur)
+                if os.path.realpath(abs_cur) == target:
+                    continue
+                _unlink_dir(p)
+            elif os.path.exists(p):
+                continue           # 用户自己放的真目录，不动
+            _link_dir(target, p)
+        except OSError as e:
+            sys.stderr.write("skills mirror: link %s failed: %r\n" % (n, e))
+    store, src_real = os.path.realpath(STORE) + os.sep, os.path.realpath(src) + os.sep
+    for n in os.listdir(dst):
+        if n in want:
+            continue
+        p = os.path.join(dst, n)
+        tgt = _link_target(p)
+        if tgt is None:
+            continue               # 真目录，不是我们建的
+        try:
+            abs_tgt = tgt if os.path.isabs(tgt) else os.path.join(dst, tgt)
+            real = os.path.realpath(abs_tgt)
+            if (not os.path.exists(p) or real.startswith(store)
+                    or real.startswith(src_real) or os.path.basename(real) == n):
+                _unlink_dir(p)
+        except OSError as e:
+            sys.stderr.write("skills mirror: unlink %s failed: %r\n" % (n, e))
 
 
 def _tombstones():
