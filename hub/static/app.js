@@ -3,6 +3,8 @@ let AGENTS = [], CUR = null, LAST_ID = 0, JOB = null, MODE = localStorage.getIte
 let POLL = null, STAGED = [], RENDERED = new Set();
 let CHAT_GEN = 0;   // 切换会话即递增；迟到的响应据此丢弃，避免画进别的会话
 
+const IS_IOS = /iPad|iPhone|iPod/.test(navigator.userAgent) ||
+               (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
 const $ = (id) => document.getElementById(id);
 const esc = (s) => (s || '').replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const escAttr = esc;
@@ -541,7 +543,15 @@ async function openPreview(id, name, mime){
     if(m.startsWith('image/') || /\.(png|jpe?g|gif|webp|heic|bmp)$/.test(n)){
       body.innerHTML = `<img src="${url}" alt="${escAttr(name)}">`;
     }else if(m === 'application/pdf' || n.endsWith('.pdf')){
-      body.innerHTML = `<iframe src="${url}" title="${escAttr(name)}"></iframe>`;
+      if(IS_IOS){
+        body.innerHTML = `<div style="padding:28px 18px;text-align:center">` +
+          `<div style="font-size:40px">📄</div>` +
+          `<div style="margin:14px 0 18px;color:#6E7873;font-size:13px">iOS 不支持在页面里直接显示 PDF</div>` +
+          `<button class="pick" style="padding:12px 22px" onclick="window.open('${url}','_blank')">打开 PDF</button>` +
+          `</div>`;
+      }else{
+        body.innerHTML = `<iframe src="${url}" title="${escAttr(name)}"></iframe>`;
+      }
     }else if(m.startsWith('video/') || /\.(mp4|mov|m4v|webm)$/.test(n)){
       body.innerHTML = `<video src="${url}" controls playsinline></video>`;
     }else if(m.startsWith('audio/') || /\.(mp3|wav|m4a|ogg|flac)$/.test(n)){
@@ -1024,7 +1034,7 @@ function atPaint(){
   if(!m || !AT.length){ closeAt(); return; }
   m.innerHTML = '<div class="hd">文件 · ↑↓ 选择，回车插入，Esc 取消</div>' +
     AT.map((f, i) => `<div class="it${i === AT_IDX ? ' cur' : ''}" onclick="useFile(${i})">` +
-      `<b>@${esc(f.name)}</b><span>${f.msg ? '已发过' : '待发'} · ${(f.size/1024).toFixed(0)} KB</span></div>`).join('');
+      `<b>@${esc(f.name)}</b><span>${f.dir === 'out' ? '产出' : (f.msg ? '已发过' : '待发')} · ${(f.size/1024).toFixed(0)} KB</span></div>`).join('');
   m.classList.add('on');
 }
 function atQuery(){

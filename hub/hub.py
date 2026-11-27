@@ -1003,8 +1003,9 @@ class Handler(BaseHTTPRequestHandler):
                 if not self._authed():
                     return
                 ag = q.get("agent", [""])[0]
-                rows_ = rows("""SELECT id,name,size,mime,ts,msg FROM files
-                                WHERE kind='in' AND agent=? ORDER BY ts DESC LIMIT 30""", (ag,))
+                # 上传的和你让 agent 产出的都算"这个会话的文件"，@ 时都能引用
+                rows_ = rows("""SELECT id,name,size,mime,ts,msg,kind AS dir FROM files
+                                WHERE agent=? ORDER BY ts DESC LIMIT 40""", (ag,))
                 for f in rows_:
                     f["kind"] = file_kind(f["mime"], f["name"])
                     f["url"] = "api/file?id=" + f["id"]
