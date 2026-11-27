@@ -1515,6 +1515,11 @@ class Handler(BaseHTTPRequestHandler):
                 if name.strip() != ag["name"]:
                     raise Api(400, "名字不对，没有清除")
                 with DB_LOCK, db() as c:
+                    # 先把落盘的文件路径收好：只删记录会把块留在磁盘上（之前每次清除都在漏）
+                    blobs = []
+                    for r_ in c.execute("SELECT id, stored FROM files WHERE agent=?", (aid,)):
+                        blobs.append(r_[1] or "")
+                        blobs.append(os.path.join(FILES, r_[0]))
                     c.execute("DELETE FROM messages WHERE agent=?", (aid,))
                     c.execute("DELETE FROM jobs WHERE agent=?", (aid,))
                     c.execute("DELETE FROM files WHERE agent=?", (aid,))
@@ -1524,6 +1529,12 @@ class Handler(BaseHTTPRequestHandler):
                     c.execute("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
                               (aid, "purge_dir", ag["cwd"], now(), ag["host"] or ""))
                     c.commit()
+                for b_ in blobs:
+                    if b_ and os.path.exists(b_):
+                        try:
+                            os.remove(b_)
+                        except OSError:
+                            pass
                 bump(); return self._json({"ok": True})
             if p == "/api/team":
                 d = self._body()

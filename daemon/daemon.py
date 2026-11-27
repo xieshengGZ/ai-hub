@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112706   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112707   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES = set(), set(), {}
@@ -129,6 +129,38 @@ setlocal
 """
 
 
+AGENTS_MARK_B = "<!-- aihub:begin 下面这段由 AI 中枢维护，每轮重写；你自己的内容写在标记外 -->"
+AGENTS_MARK_E = "<!-- aihub:end -->"
+
+
+def write_agents_md(cwd, name, block):
+    """工作目录可能是用户的项目：只维护标记内的块，标记外一个字都不动。"""
+    path = os.path.join(cwd, "AGENTS.md")
+    try:
+        old = open(path, encoding="utf-8").read()
+    except OSError:
+        old = ""
+    seg = AGENTS_MARK_B + "\n" + block.rstrip("\n") + "\n" + AGENTS_MARK_E + "\n"
+    if AGENTS_MARK_B in old and AGENTS_MARK_E in old:
+        head = old.split(AGENTS_MARK_B, 1)[0]
+        tail = old.split(AGENTS_MARK_E, 1)[1].lstrip("\n")
+        new = head + seg + tail
+    elif old.strip() and old.startswith("# %s" % name) and "## 给用户发文件" in old:
+        # 早期版本整篇写的，是我们自己的产物，直接换掉
+        new = seg
+    elif old.strip():
+        # 用户自己的 AGENTS.md：原样保留，把自己的块追加在后面
+        new = old.rstrip("\n") + "\n\n" + seg
+    else:
+        new = seg
+    if new != old:
+        try:
+            with open(path, "w", encoding="utf-8") as f:
+                f.write(new)
+        except OSError as e:
+            sys.stderr.write("write AGENTS.md failed: %r\n" % e)
+
+
 class Acp:
     def __init__(self, agent):
         self.agent, self.p, self.sid = agent, None, None
@@ -146,7 +178,8 @@ class Acp:
         """写 AGENTS.md 的人格，并把绑定的技能镜像进 kimi 实际扫描的目录。"""
         cwd = self.agent["cwd"]
         os.makedirs(cwd, exist_ok=True)
-        lines = ["# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", "")),
+        block = "# %s\n\n%s\n" % (self.agent.get("name", ""), self.agent.get("prompt", ""))
+        block += (
                  "\n## 给用户发文件\n\n**系统不会自动回收工作目录里的文件**，只有你显式执行脚本，\n"
                  "文件才会出现在聊天里。所以：\n\n"
                  "- 用户明确要文件（「把这个发给我」「把结果发我」）→ 在本目录执行：\n\n"
@@ -155,9 +188,8 @@ class Acp:
                  "- 用户没提，就只回文字，不要主动上传。\n"
                  "- 脚本会把文件挂在你这条回复下面，用户能直接下载；\n"
                  "  要发给另一个 agent，加 `--to <agent_id>`，文件进对方暂存区。\n"
-                 "\n"]
-        with open(os.path.join(cwd, "AGENTS.md"), "w", encoding="utf-8") as f:
-            f.write("".join(lines))
+                 "\n")
+        write_agents_md(cwd, self.agent.get("name", ""), block)
         try:
             send_sh = os.path.join(cwd, "aihub-send.sh")
             with open(send_sh, "w", encoding="utf-8", newline="\n") as f:
