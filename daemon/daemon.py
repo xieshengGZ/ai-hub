@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112713   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112714   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
@@ -628,9 +628,13 @@ def _run_job(job, agent, files):
         sid, rest = m.group(1), (m.group(2) or "").strip()
         sk = next((x for x in (agent.get("skills") or []) if x.get("id") == sid), None)
         if sk:
+            # 技能正文只在节点机上，给绝对路径；技能目录里还有它引用的辅助文件
+            sk_file = os.path.join(state_dir(cwd, agent["id"]), "skills", sid, "SKILL.md")
+            if not os.path.isfile(sk_file):
+                sk_file = os.path.join(cwd, "skills", sid, "SKILL.md")
             text = ("请使用技能「%s」来完成下面的任务。适用场景：%s\n"
-                    "技能正文在 skills/%s/SKILL.md，需要时读它再动手。\n\n任务：%s"
-                    % (sk.get("name") or sid, (sk.get("when_to_use") or "")[:200], sid,
+                    "技能正文在 %s，先完整读一遍再动手；同目录下的其它文件是它引用的补充材料。\n\n任务：%s"
+                    % (sk.get("name") or sid, (sk.get("when_to_use") or "")[:200], sk_file,
                        rest or "（用户没有补充说明，按技能默认流程执行）"))
     text = attach_files(text, cwd, files)
     parts = [{"type": "text", "text": text}]
