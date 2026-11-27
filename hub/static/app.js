@@ -1131,8 +1131,8 @@ async function uploadFiles(files){
 async function loadStaged(){
   if(!CUR){ paintAttachBar([]); return; }
   try{
-    const d = await api('api/files?agent=' + encodeURIComponent(CUR.id));
-    paintAttachBar((d.files || []).filter(f => !f.msg));
+    const d = await api('api/files?agent=' + encodeURIComponent(CUR.id) + '&staged=1');
+    paintAttachBar(d.files || []);
   }catch(e){ paintAttachBar([]); }
 }
 
