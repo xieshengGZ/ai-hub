@@ -761,8 +761,15 @@ function inpClear(){
   $('btnSend').disabled = true;
 }
 
+function normalizeSkill(text){
+  if(!text || text.startsWith('/skill:')) return text;
+  const m = /^\/([a-zA-Z0-9_-]+)(?=\s|$)/.exec(text);
+  if(!m) return text;
+  return SKILLS.some(s => s.id === m[1]) ? '/skill:' + text.slice(1) : text;
+}
+
 async function send(){
-  const text = inpText().trim();
+  const text = normalizeSkill(inpText().trim());
   if(!text || !CUR) return;
   inpClear();
   try{
@@ -913,7 +920,7 @@ function slashPaint(){
 }
 function slashCheck(){
   const t = inpText();
-  const m = /^\/skill:?([a-zA-Z0-9_-]*)$/.exec(t);
+  const m = /^\/(?:skill:)?([a-zA-Z0-9_-]*)$/.exec(t);
   if(!m || !SKILLS.length){ closeSlash(); return; }
   const q = m[1].toLowerCase();
   SLASH = SKILLS.filter(s => (s.id || '').toLowerCase().includes(q) ||

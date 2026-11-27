@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112716   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112718   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
@@ -79,6 +79,20 @@ def sid_path(agent):
     cwd = os.path.realpath(agent.get("cwd") or "")
     tag = hashlib.sha1(cwd.encode("utf-8", "replace")).hexdigest()[:8]
     return os.path.join(LOG_DIR, "sid-%s-%s.txt" % (agent.get("id") or "agent", tag))
+
+
+HIDDEN = {}
+if os.name == "nt":
+    # pythonw 没有控制台；任何 cmd/conhost 子进程都会弹出黑框，统一隐藏
+    HIDDEN["creationflags"] = 0x08000000              # CREATE_NO_WINDOW
+    _si = subprocess.STARTUPINFO()
+    _si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    _si.wShowWindow = 0
+    HIDDEN["startupinfo"] = _si
+
+
+def run_hidden(argv, timeout=60):
+    return subprocess.run(argv, capture_output=True, text=True, timeout=timeout, **HIDDEN)
 
 
 def py_exe():
@@ -334,10 +348,13 @@ class Acp:
         sys.stderr.write("[acp] spawn kimi acp\n"); sys.stderr.flush()
         kw = {}
         if os.name == "nt":
-            # 父进程无控制台时会为控制台子进程新建一个窗口，这里禁掉
-            kw["creationflags"] = 0x08000000  # CREATE_NO_WINDOW
+            # 关键：给 kimi 一个「隐藏的独立控制台」。父进程是 pythonw（没有控制台），
+            # 如果这里用 CREATE_NO_WINDOW，kimi 再起 cmd 时 Windows 会为每个子进程新开窗口
+            # （agent 一跑命令就闪一片黑框）。给它一个自己的控制台并隐藏，子孙进程都复用它。
+            kw["creationflags"] = 0x00000010   # CREATE_NEW_CONSOLE
             si = subprocess.STARTUPINFO()
             si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+            si.wShowWindow = 0                 # SW_HIDE
             kw["startupinfo"] = si
         sk_dir = os.path.join(self.state, "skills")
         os.makedirs(sk_dir, exist_ok=True)
@@ -794,8 +811,7 @@ def link_skill(cwd, sid):
     if os.path.islink(dst) or os.path.isdir(dst):
         unlink_skill(cwd, sid)
     if os.name == "nt":
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", dst, src],
-                           capture_output=True, text=True)
+        r = run_hidden(["cmd", "/c", "mklink", "/J", dst, src])
         return "ok" if r.returncode == 0 else ((r.stderr or r.stdout or "mklink 失败").strip()[:200])
     os.symlink(src, dst, target_is_directory=True)
     return "ok"
@@ -817,8 +833,7 @@ def unlink_skill(cwd, sid):
 
 def _link_dir(src, dst):
     if os.name == "nt":
-        r = subprocess.run(["cmd", "/c", "mklink", "/J", dst, src],
-                           capture_output=True, text=True)
+        r = run_hidden(["cmd", "/c", "mklink", "/J", dst, src])
         if r.returncode != 0:
             raise OSError((r.stderr or r.stdout or "mklink failed").strip()[:200])
     else:
@@ -1030,7 +1045,7 @@ def self_update():
         new = os.path.abspath(__file__) + ".new"
         with open(new, "wb") as f:
             f.write(data)
-        r = subprocess.run([sys.executable, "-m", "py_compile", new], capture_output=True)
+        r = run_hidden([py_exe(), "-m", "py_compile", new])
         if r.returncode != 0:
             sys.stderr.write("self-update: new file does not compile, skip\n")
             os.remove(new)
