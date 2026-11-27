@@ -1431,6 +1431,16 @@ async function toggleAlways(){
   }catch(e){ toast('设置失败：' + e.message); }
 }
 
+async function reloadAgent(){
+  if(!CUR) return;
+  if(!confirm(`重载「${CUR.name}」？\n会重启它的 ACP 进程，正在跑的任务结束后生效；对话历史保留。`)) return;
+  try{
+    await api('api/agent/reload', {method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({agent: CUR.id})});
+    closeSheet(); toast('已请求重载，空闲后生效');
+  }catch(e){ toast('重载失败：' + e.message); }
+}
+
 function toast(msg){
   const t = document.createElement('div');
   t.textContent = msg;

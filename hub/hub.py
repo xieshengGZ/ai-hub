@@ -1553,6 +1553,16 @@ class Handler(BaseHTTPRequestHandler):
                     raise Api(404, "没有这个 agent")
                 run("UPDATE agents SET always_on=? WHERE id=?", (on, aid))
                 return self._json({"ok": True, "agent": aid, "always_on": bool(on)})
+            if p == "/api/agent/reload":
+                d = self._body()
+                aid = d.get("agent", "")
+                ag = one("SELECT id,host FROM agents WHERE id=? AND deleted=0", (aid,))
+                if not ag:
+                    raise Api(404, "没有这个 agent")
+                run("INSERT INTO daemon_ops(agent, op, path, ts, host) VALUES(?,?,?,?,?)",
+                    (aid, "restart", "", now(), ag.get("host") or ""))
+                bump()
+                return self._json({"ok": True, "agent": aid})
             if p == "/api/skill/create":
                 d = self._body()
                 name = (d.get("name") or "").strip()
