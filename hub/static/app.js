@@ -487,7 +487,7 @@ function attHtml(files){
   const imgs = files.filter(f => f.kind === 'image');
   const rest = files.filter(f => f.kind !== 'image');
   return '<div class="atts">' +
-    imgs.map(f => `<img class="att-img" src="${f.url}" alt="${esc(f.name)}" onclick="viewImg('${f.url}')" onload="if(window.STICK){const c=document.getElementById('chat');if(c)c.scrollTop=c.scrollHeight}">`).join('') +
+    imgs.map(f => `<img class="att-img" src="${f.url}" alt="${esc(f.name)}" onclick="openPreview('${f.id}','${escAttr(f.name)}','${escAttr(f.mime || '')}')" onload="if(window.STICK){const c=document.getElementById('chat');if(c)c.scrollTop=c.scrollHeight}">`).join('') +
     rest.map(f => {
       const isPdf = /\.pdf$/i.test(f.name) || (f.mime || '') === 'application/pdf';
       if(isPdf){
@@ -531,7 +531,7 @@ async function openPreview(id, name, mime){
   window.PV_TEXT = '';
   o.innerHTML = `<div class="pvhd"><b>${esc(name)}</b>` +
     `<span class="pvact"><span id="pvCopy" class="pvcopy" onclick="pvCopyText()" style="display:none">复制全文</span>` +
-    `<a href="${url}&dl=1" download="${escAttr(name)}">下载</a>` +
+    `<span class="pvcopy" onclick="dlFile('${url}','${escAttr(name)}','${escAttr(mime || '')}')">下载</span>` +
     `<span class="pvx" onclick="closePreview()">关闭</span></span></div>` +
     `<div class="pvbody"><div class="hint">加载中…</div></div>`;
   document.body.appendChild(o);
@@ -567,6 +567,28 @@ function pvCopyText(){
   if(!t) return;
   navigator.clipboard.writeText(t).then(() => toast('已复制全文'), () => toast('复制失败'));
 }
+async function dlFile(url, name, mime){
+  const href = url + (url.indexOf('?') >= 0 ? '&' : '?') + 'dl=1';
+  // iOS 的 PWA 里 <a download> 经常没反应，先试系统分享面板（会给出「存储图像/存储到文件」）
+  try{
+    const r = await fetch(href, {credentials:'same-origin'});
+    if(r.ok){
+      const b = await r.blob();
+      const f = new File([b], name || 'file', {type: mime || b.type || 'application/octet-stream'});
+      if(navigator.canShare && navigator.canShare({files: [f]})){
+        await navigator.share({files: [f], title: name || ''});
+        return;
+      }
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(b); a.download = name || 'file';
+      document.body.appendChild(a); a.click(); a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+      return;
+    }
+  }catch(e){ /* 用户取消分享也会走到这里，下面兜底 */ }
+  window.open(href, '_blank');
+}
+
 function viewImg(u){
   let o = document.getElementById('lb');
   if(!o){
