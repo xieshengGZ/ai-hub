@@ -25,7 +25,7 @@ if sys.stderr is None or sys.stdout is None:
     if sys.stdout is None:
         sys.stdout = _f
 
-VERSION = 2026112715   # 自更新只升不降：中枢那份比我旧就跳过
+VERSION = 2026112716   # 自更新只升不降：中枢那份比我旧就跳过
 
 PROCS, LOCK, STOP = {}, threading.Lock(), threading.Event()
 ACTIVE, KNOWN, WHERES, STATES = set(), set(), {}, {}
@@ -569,29 +569,6 @@ def run_job(job, agent, files):
             pass
 
 
-def skill_file(cwd, agent_id, sid):
-    """技能装没装只看磁盘：state/skills/<id>/SKILL.md 存在就是装了。"""
-    p = os.path.join(state_dir(cwd, agent_id), "skills", sid, "SKILL.md")
-    if os.path.isfile(p):
-        return p
-    legacy = os.path.join(cwd, "skills", sid, "SKILL.md")   # 迁移前的旧位置
-    return legacy if os.path.isfile(legacy) else ""
-
-
-def skill_desc(path, limit=160):
-    """从 SKILL.md 的 frontmatter 里取一句 description，给提示词用。"""
-    try:
-        with open(path, encoding="utf-8", errors="replace") as f:
-            head = f.read(4000)
-    except OSError:
-        return ""
-    m = re.search(r"^description:\s*(.+)$", head, re.M)
-    if not m:
-        return ""
-    d = m.group(1).strip().strip('"').strip("'")
-    return d[:limit]
-
-
 def attach_files(text, cwd, files, fetch=None):
     """附件是壳的事：@ 文件名的地方就地换成路径，没 @ 的列在末尾。
     图片和文件一视同仁，不额外提示怎么读。"""
@@ -645,18 +622,6 @@ def _run_job(job, agent, files):
     if not (agent.get("model_cfg") or {}).get("base_url"):
         raise RuntimeError("这个 agent 没有指定模型：请在中枢的会话里选一个模型后再发消息")
     text = job["text"]
-    # 支持 "/技能id 任务描述" 的调用形式：翻译成明确的使用技能指令
-    m = re.match(r"^/([a-z0-9_-]+)(?:\s+([\s\S]*))?$", (text or "").strip())
-    if m:
-        sid, rest = m.group(1), (m.group(2) or "").strip()
-        sk_file = skill_file(cwd, agent["id"], sid)
-        if sk_file:
-            desc = skill_desc(sk_file)
-            text = ("请使用技能「%s」来完成下面的任务。%s\n"
-                    "技能正文在 %s，先完整读一遍再动手；同目录下的其它文件是它引用的补充材料。\n\n任务：%s"
-                    % (sid, ("适用场景：" + desc) if desc else "", sk_file,
-                       rest or "（用户没有补充说明，按技能默认流程执行）"))
-        # 磁盘上没有这个技能就原样传下去（可能是路径、也可能是打错了）
     text = attach_files(text, cwd, files)
     parts = [{"type": "text", "text": text}]
 

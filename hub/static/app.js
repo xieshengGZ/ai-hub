@@ -908,12 +908,12 @@ function slashPaint(){
   if(!m || !SLASH.length){ closeSlash(); return; }
   m.innerHTML = '<div class="hd">技能 · ↑↓ 选择，回车使用，Esc 取消</div>' +
     SLASH.map((s, i) => `<div class="it${i === SLASH_IDX ? ' cur' : ''}" onclick="useSkill(${i})">` +
-      `<b>/${esc(s.id)}</b><span>${esc(s.summary || s.name || '')}</span></div>`).join('');
+      `<b>/skill:${esc(s.id)}</b><span>${esc(s.summary || s.name || '')}</span></div>`).join('');
   m.classList.add('on');
 }
 function slashCheck(){
   const t = inpText();
-  const m = /^\/([a-zA-Z0-9_-]*)$/.exec(t);
+  const m = /^\/skill:?([a-zA-Z0-9_-]*)$/.exec(t);
   if(!m || !SKILLS.length){ closeSlash(); return; }
   const q = m[1].toLowerCase();
   SLASH = SKILLS.filter(s => (s.id || '').toLowerCase().includes(q) ||
@@ -926,7 +926,7 @@ function useSkill(i){
   const s = SLASH[i || 0];
   if(!s) return;
   const el = $('inp');
-  el.textContent = '/' + s.id + ' ';
+  el.textContent = '/skill:' + s.id + ' ';
   el.classList.remove('is-empty');
   $('btnSend').disabled = false;
   el.style.height = 'auto';
